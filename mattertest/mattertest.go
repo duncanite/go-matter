@@ -26,11 +26,9 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/duncanite/go-matter"
-	"github.com/duncanite/go-matter/internal/todo"
 )
 
 // Fake is a device in a matter.Home that does as it is asked, at once,
@@ -180,17 +178,3 @@ func (SetOn) ask()    {}
 func (SetLevel) ask() {}
 func (Move) ask()     {}
 func (Stop) ask()     {}
-
-// Across serves near through a bridge, commissions that bridge with a
-// controller, and returns the controller's view of it: the same devices,
-// having crossed the protocol and back, in this process and on no
-// network. What holds of near holds of what it returns, but for the
-// devices' IDs, which every Source chooses for itself; a test of that is
-// a test of this module. Both ends close with the test.
-func Across(tb testing.TB, near matter.Source) matter.Source {
-	tb.Helper()
-
-	_ = todo.ImplementMe(tb, near)
-
-	return nil
-}

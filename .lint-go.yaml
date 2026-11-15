@@ -7,8 +7,8 @@ golangci:
   linters:
     exclusions:
       rules:
-        # The examples show an API that is declared and not built yet: there
-        # is no output to check them against until it is.
+        # The examples open a bridge and a controller on a network: there is
+        # no output of theirs a test run could check.
         - path: example_test\.go
           linters:
             - testableexamples
@@ -30,12 +30,9 @@ golangci:
           - id ID
           - on bool
       wrapcheck:
-        # A body that is not built returns the marker's error as it is.
-        # This goes with the package, when the last of them is built.
+        # internal/fabric wraps every error of the library underneath with
+        # what it was doing; bridge and controller pass it on as it is.
         ignore-package-globs:
-          - github.com/duncanite/go-matter/internal/todo
-          # internal/fabric wraps every error of the library underneath with
-          # what it was doing; bridge passes it on as it is.
           - github.com/duncanite/go-matter/internal/fabric
         # What a Home's Put and Report return is package matter's own error,
         # wrapped there with what it was about; a caller in this module

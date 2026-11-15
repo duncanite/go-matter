@@ -30,9 +30,8 @@ Examples: [an adapter writing a maker's dimmers into a home](../example_test.go)
 [a bridge daemon](../bridge/example_test.go) and
 [a controller](../controller/example_test.go).
 
-Package `matter` is built, `mattertest`'s devices, and the bridge. Every other body goes
-through [`internal/todo`](../internal/todo/todo.go), which prints `IMPLEMENT ME` and
-returns an error; the package goes when the last of them is built.
+All of it is built: package `matter`, the bridge, the controller, and `mattertest`, whose
+`Across` runs the two against each other in one process.
 
 ## What the API holds itself to
 
@@ -152,7 +151,8 @@ and the vocabulary does not: the bridge keeps that level and uses it at the next
 
 ## What the first implementation does not do
 
-The bridge is built on [go-fabric](https://github.com/SukramJ/go-fabric), behind
+The bridge and the controller are built on
+[go-fabric](https://github.com/SukramJ/go-fabric), behind
 [`internal/fabric`](../internal/fabric/serve.go), the one package that names it. Where it
 falls short of the API, the API stays as it is and the shortfall is here:
 
@@ -168,6 +168,19 @@ falls short of the API, the API stays as it is and the shortfall is here:
 - **A name is cut at 32 bytes and a room at 16**, which is what Matter gives each.
 - **A node opens to commissioning by itself** when no fabric holds it. The bridge closes
   what `Invite` did not open, a moment after it opens.
+- **A remote crosses as one remote for each of its buttons**, each named by the remote
+  and the button. Matter has a switch for a button and nothing here groups them again.
+- **Every dimmable device has `Move` and `Stop` on the far side.** Matter requires the
+  commands of every such device; one that has none behind the bridge answers them with
+  `ErrFailed`.
+- **A device with no vendor of its own is its bridge's**, on the far side.
+- **The controller's `Interface` is not honoured.** It uses every interface.
+- **The controller does not run on Windows.** To find devices the library first asks the
+  system to say which interface each packet came in on, which `golang.org/x/net` does not
+  implement there, and it gives up. `Open` is `errors.ErrUnsupported`.
+- **Whether the bridge can be found on Windows is not verified.** It opens there. Its
+  announcement is made through the same call, whose failure the library logs and goes
+  on from; a bridge that announces nothing is one no controller finds.
 
 ## To settle when it is built
 
@@ -181,3 +194,6 @@ specification, or a real controller.
 3. **How long an invitation can last.** Matter bounds a commissioning window; `Invite`
    refuses, with the library's own reason, one it cannot keep.
 4. **Every name in the tables above.**
+5. **That a node which went away is found again.** It is the library's to do, and no test
+   here shows it: on a test's network a node stopped and started again was still
+   unreachable a minute later, for a reason not found.
