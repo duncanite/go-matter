@@ -17,7 +17,7 @@ import (
 // bridge at the next Open, with the same code, its secret its owner's
 // alone.
 //
-//nolint:paralleltest // it takes Matter's port, which a machine has one of
+//nolint:paralleltest // it may take Matter's port, which a machine has one of
 func TestOpenKeepsItsDirectory(t *testing.T) {
 	var home matter.Home
 
@@ -79,6 +79,27 @@ func TestOpenKeepsItsDirectory(t *testing.T) {
 		if err = served.Close(); !errors.Is(err, matter.ErrClosed) {
 			t.Fatalf("run %d: closed twice: %v", run, err)
 		}
+	}
+
+	// Two bridges on one machine: the second finds Matter's port taken,
+	// by the first or by a bridge that was running before the test, and
+	// opens all the same.
+	first, err := bridge.Open(ctx, bridge.Config{Name: "Test bridge", Dir: dir}, &home)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := bridge.Open(ctx, bridge.Config{Name: "Another", Dir: filepath.Join(t.TempDir(), "another")}, &home)
+	if err != nil {
+		t.Fatalf("a second bridge on the machine: %v", err)
+	}
+
+	if _, err = second.Invite(ctx, time.Minute); err != nil {
+		t.Fatalf("a second bridge on the machine, invited: %v", err)
+	}
+
+	if err = errors.Join(first.Close(), second.Close()); err != nil {
+		t.Fatal(err)
 	}
 
 	if codes[0] != codes[1] || len(codes[0].Manual) != 11 || codes[0].QR[:3] != "MT:" {

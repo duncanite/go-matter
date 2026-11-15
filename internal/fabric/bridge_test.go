@@ -215,7 +215,7 @@ func TestABridgeIsHeld(t *testing.T) {
 	}
 
 	site := fabrictest.NewSite(t, fabrictest.Options{Clock: clock.System{}})
-	device := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Test bridge"}, secret, "", nil))
+	device := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Test bridge"}, secret, "", nil, ""))
 
 	bridge, err := fabric.NewBridge(ctx, device.Node(), &home)
 	if err != nil {

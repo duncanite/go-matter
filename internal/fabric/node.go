@@ -24,7 +24,12 @@ type Identity struct {
 // NodeConfig is the configuration of the node a bridge is: its identity,
 // Matter's development one where none is given, the secret it is
 // commissioned with, and where it keeps its state.
-func NodeConfig(identity Identity, secret node.Commissioning, store string, interfaces []string) node.Config {
+//
+// listen is the address the node answers on; empty is Matter's own port,
+// on every address.
+func NodeConfig(
+	identity Identity, secret node.Commissioning, store string, interfaces []string, listen string,
+) node.Config {
 	if identity.VendorID == 0 {
 		identity.VendorID, identity.ProductID = testVendor, testProduct
 	}
@@ -38,7 +43,7 @@ func NodeConfig(identity Identity, secret node.Commissioning, store string, inte
 	}
 
 	return node.Config{
-		Network:            node.Network{MDNS: node.MDNS{Interfaces: interfaces}},
+		Network:            node.Network{Listen: listen, MDNS: node.MDNS{Interfaces: interfaces}},
 		Commissioning:      secret,
 		ProductDescription: node.ProductDescription{VendorID: identity.VendorID, ProductID: identity.ProductID},
 		BasicInformation: node.BasicInformation{

@@ -34,7 +34,8 @@ type Config struct {
 	Product Product
 	// Interface is the network interface the bridge is found on: where
 	// it announces itself. Empty is all of them. It answers on every
-	// interface whichever is named.
+	// interface whichever is named, on Matter's own port, or on another
+	// when a bridge of the same machine already has that one.
 	Interface string
 }
 
