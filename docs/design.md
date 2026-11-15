@@ -30,7 +30,7 @@ Examples: [an adapter writing a maker's dimmers into a home](../example_test.go)
 [a bridge daemon](../bridge/example_test.go) and
 [a controller](../controller/example_test.go).
 
-Package `matter` is built: `Device.Validate` and the home. Every other body goes through
+Package `matter` is built, and `mattertest`'s devices. Every other body goes through
 [`internal/todo`](../internal/todo/todo.go), which prints `IMPLEMENT ME` and returns an
 error; the package goes when the last of them is built.
 

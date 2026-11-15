@@ -24,7 +24,8 @@ var (
 	// ErrDescription: a device described in a way that cannot be served,
 	// or told a change it cannot have.
 	ErrDescription = errors.New("the device's description cannot be served")
-	// ErrNoDevice: no device by that ID is held.
+	// ErrNoDevice: no device by that ID is held, or the one that is, is
+	// not the device asked: it was replaced since it was read.
 	ErrNoDevice = errors.New("no such device")
 	// ErrClosed: what was asked is over for good: a bridge or a
 	// controller closed, a node unpaired.
