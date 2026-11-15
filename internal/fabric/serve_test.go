@@ -39,7 +39,7 @@ func serve(t *testing.T, home matter.Source) *rig {
 	}
 
 	site := fabrictest.NewSite(t, fabrictest.Options{Clock: clock.System{}})
-	device := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Test bridge"}, secret, "", nil))
+	device := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Test bridge"}, secret, "", nil, ""))
 
 	serving := fabric.Serve(device.Node(), home)
 	t.Cleanup(serving.Close)

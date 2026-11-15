@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/SukramJ/go-fabric/node"
@@ -29,6 +30,8 @@ const (
 	secretPermissions = 0o600
 	// How long a node is given to stop.
 	stopping = 10 * time.Second
+	// A port of the system's choosing, on every address.
+	anyPort = ":0"
 )
 
 // ErrNoFabric is a fabric the bridge is not held by.
@@ -79,15 +82,16 @@ func OpenBridge(
 		return nil, err
 	}
 
-	made, err := node.New(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces))
-	if err != nil {
-		return nil, fmt.Errorf("making the bridge's node: %w", err)
+	// On Matter's own port, or, when another bridge of this machine has
+	// it, on one the system picks: a node says in its announcement which
+	// port it answers on, so a controller finds it either way.
+	made, err := started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, ""))
+	if taken(err) {
+		made, err = started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, anyPort))
 	}
 
-	if err = made.Start(ctx); err != nil {
-		_ = made.Stop(context.WithoutCancel(ctx))
-
-		return nil, fmt.Errorf("starting the bridge's node: %w", err)
+	if err != nil {
+		return nil, err
 	}
 
 	bridge, err := NewBridge(ctx, made, source)
@@ -100,6 +104,31 @@ func OpenBridge(
 	bridge.owned = true
 
 	return bridge, nil
+}
+
+// taken says whether an error is that of an address another has: by its
+// name on Unix, and by Windows' own number, which Go does not read as
+// that name.
+func taken(err error) bool {
+	const windowsInUse = syscall.Errno(10048)
+
+	return errors.Is(err, syscall.EADDRINUSE) || errors.Is(err, windowsInUse)
+}
+
+// started is a node made and started, or neither.
+func started(ctx context.Context, cfg node.Config) (*node.Node, error) {
+	made, err := node.New(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("making the bridge's node: %w", err)
+	}
+
+	if err = made.Start(ctx); err != nil {
+		_ = made.Stop(context.WithoutCancel(ctx))
+
+		return nil, fmt.Errorf("starting the bridge's node: %w", err)
+	}
+
+	return made, nil
 }
 
 // NewBridge serves the source through a node that is started and stays
