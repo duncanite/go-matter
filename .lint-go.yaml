@@ -24,3 +24,11 @@ golangci:
         # This goes with the package, when the last of them is built.
         ignore-package-globs:
           - github.com/duncanite/go-matter/internal/todo
+        # What a Home's Put and Report return is package matter's own error,
+        # wrapped there with what it was about; a caller in this module
+        # wrapping it again would say the same thing twice. A device's
+        # command and a Source's Watch return someone else's error, and are
+        # not here.
+        extra-ignore-sigs:
+          - github.com/duncanite/go-matter.Home).Put(
+          - github.com/duncanite/go-matter.Home).Report(
