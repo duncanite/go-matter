@@ -30,9 +30,9 @@ Examples: [an adapter writing a maker's dimmers into a home](../example_test.go)
 [a bridge daemon](../bridge/example_test.go) and
 [a controller](../controller/example_test.go).
 
-Package `matter` is built, and `mattertest`'s devices. Every other body goes through
-[`internal/todo`](../internal/todo/todo.go), which prints `IMPLEMENT ME` and returns an
-error; the package goes when the last of them is built.
+Package `matter` is built, `mattertest`'s devices, and the bridge. Every other body goes
+through [`internal/todo`](../internal/todo/todo.go), which prints `IMPLEMENT ME` and
+returns an error; the package goes when the last of them is built.
 
 ## What the API holds itself to
 
@@ -119,7 +119,7 @@ text for this document.
 | `Remote` | one Generic Switch per button, labelled |
 | `OnOff` | the On/Off cluster: On, Off and Toggle all arrive as `Set` |
 | `LevelControl.Set` | Level Control's MoveToLevel, with the device on or coming on |
-| `LevelControl.Move`, `Stop` | Level Control's Move and Stop; a device without them is stepped by `Set` |
+| `LevelControl.Move`, `Stop` | Level Control's Move and Stop |
 | `Level`, above 0 to 1 | CurrentLevel, 1 to 254 |
 | a `time.Duration` | TransitionTime, in tenths of a second |
 | `ButtonPressed`, `ButtonReleased` | the Switch cluster's InitialPress and ShortRelease; LongPress and MultiPress derived by the bridge |
@@ -150,6 +150,25 @@ and the vocabulary does not: the bridge keeps that level and uses it at the next
 - Joining sources. Adapters write into one home, each naming its devices so that no two
   collide.
 
+## What the first implementation does not do
+
+The bridge is built on [go-fabric](https://github.com/SukramJ/go-fabric), behind
+[`internal/fabric`](../internal/fabric/serve.go), the one package that names it. Where it
+falls short of the API, the API stays as it is and the shortfall is here:
+
+- **A device's model, serial and firmware do not cross.** Its name, vendor and room do.
+  The library fills a bridged device's product name and serial number from one value of
+  its own, and offers no place for a software version.
+- **`Interface` restricts where the bridge announces itself, not where it answers.**
+- **`Move` and `Stop` are answered as unsupported for a device without them.** The
+  bridge does not step such a device by `Set`. Matter's Step commands, and on for a
+  time, are answered as unsupported for every device.
+- **A level sent to a device that is off is always kept**, for when it is switched on.
+  Matter keeps it only when the command or the device says to; the bridge does not look.
+- **A name is cut at 32 bytes and a room at 16**, which is what Matter gives each.
+- **A node opens to commissioning by itself** when no fabric holds it. The bridge closes
+  what `Invite` did not open, a moment after it opens.
+
 ## To settle when it is built
 
 These do not change the API; they are where the implementation has to check the
@@ -160,5 +179,5 @@ specification, or a real controller.
 2. **Identity through someone else's bridge.** A device behind a bridge that is not ours
    has a stable ID only if that bridge gives it a unique one.
 3. **How long an invitation can last.** Matter bounds a commissioning window; `Invite`
-   promises to keep a longer one by opening again.
+   refuses, with the library's own reason, one it cannot keep.
 4. **Every name in the tables above.**
