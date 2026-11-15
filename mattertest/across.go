@@ -46,7 +46,7 @@ func Across(tb testing.TB, near matter.Source) matter.Source {
 	}
 
 	site := fabrictest.NewSite(tb, fabrictest.Options{Clock: clock.System{}})
-	served := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Bridge"}, secret, "", nil))
+	served := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Bridge"}, secret, "", nil, ""))
 
 	bridge, err := fabric.NewBridge(ctx, served.Node(), near)
 	if err != nil {

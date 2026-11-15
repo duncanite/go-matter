@@ -39,7 +39,7 @@ func (w *town) bridge(t *testing.T, name string, home *matter.Home) (*fabrictest
 		t.Fatal(err)
 	}
 
-	served := w.site.AddNode(fabric.NodeConfig(fabric.Identity{Name: name, Serial: "B-1"}, secret, "", nil))
+	served := w.site.AddNode(fabric.NodeConfig(fabric.Identity{Name: name, Serial: "B-1"}, secret, "", nil, ""))
 
 	bridge, err := fabric.NewBridge(t.Context(), served.Node(), home)
 	if err != nil {
