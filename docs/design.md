@@ -1,10 +1,9 @@
 # The design
 
-This is the design of go-matter's API, agreed before it is built. The API itself is in
-the packages, as Go, with nothing behind it yet; this document holds what the code cannot
-say: what the API holds itself to, the decisions in it and why, how it lands on Matter,
-and what is left out. How it is wired to an implementation of Matter is left out on
-purpose and comes after this is agreed.
+This is the design of go-matter's API, agreed before it was built. The API itself is in
+the packages, as Go, built in part; this document holds what the code cannot say: what
+the API holds itself to, the decisions in it and why, how it lands on Matter, and what is
+left out. How it is wired to an implementation of Matter is not here.
 
 ## What it is for
 
@@ -31,7 +30,7 @@ Examples: [an adapter writing a maker's dimmers into a home](../example_test.go)
 [a bridge daemon](../bridge/example_test.go) and
 [a controller](../controller/example_test.go).
 
-Only `Device.Validate` does anything yet. Every other body goes through
+Package `matter` is built: `Device.Validate` and the home. Every other body goes through
 [`internal/todo`](../internal/todo/todo.go), which prints `IMPLEMENT ME` and returns an
 error; the package goes when the last of them is built.
 
