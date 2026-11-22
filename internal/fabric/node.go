@@ -11,6 +11,11 @@ const (
 	testProduct uint16 = 0x8000
 )
 
+// aggregator is the device type a bridge is found as by what would pair
+// with it. Left unsaid, the node says the type of whichever device it
+// came to serve first: a bridge found as a lamp.
+const aggregator uint16 = 0x000E
+
 // Identity is who a bridge says it is.
 type Identity struct {
 	Name      string
@@ -43,9 +48,11 @@ func NodeConfig(
 	}
 
 	return node.Config{
-		Network:            node.Network{Listen: listen, MDNS: node.MDNS{Interfaces: interfaces}},
-		Commissioning:      secret,
-		ProductDescription: node.ProductDescription{VendorID: identity.VendorID, ProductID: identity.ProductID},
+		Network:       node.Network{Listen: listen, MDNS: node.MDNS{Interfaces: interfaces}},
+		Commissioning: secret,
+		ProductDescription: node.ProductDescription{
+			DeviceType: aggregator, VendorID: identity.VendorID, ProductID: identity.ProductID,
+		},
 		BasicInformation: node.BasicInformation{
 			VendorName:   cut(identity.Vendor, nameBytes),
 			ProductName:  cut(identity.Product, nameBytes),
