@@ -87,8 +87,10 @@ func (h *Home) Remove(id ID) {
 // adapter may report what its hub says as often as its hub says it; a
 // button is always told. ErrNoDevice is a device that is not there, and
 // ErrDescription a change the device cannot have: a level for one with
-// no LevelControl or outside a level's range, a button it lacks, a
-// device added or removed, which are Put's and Remove's to say. Changes
+// no LevelControl or outside a level's range, a fan for one with no
+// FanControl, in no mode, at a speed outside a level's range, or doing
+// what it cannot, a button it lacks, a device added or removed, which
+// are Put's and Remove's to say. Changes
 // reported together are taken together, or none of them is.
 func (h *Home) Report(id ID, changes ...Change) error {
 	h.mu.Lock()
@@ -254,6 +256,10 @@ func (h *Home) handOut(held *Device) Device {
 		h.handOutLevel(held, out.LevelControl)
 	}
 
+	if out.FanControl != nil {
+		h.handOutFan(held, out.FanControl)
+	}
+
 	return out
 }
 
@@ -291,6 +297,49 @@ func (h *Home) handOutLevel(held *Device, out *LevelControl) {
 	}
 }
 
+// handOutFan is handOut for a FanControl. SetOscillating and SetSleep
+// stay nil for a device put without them.
+func (h *Home) handOutFan(held *Device, out *FanControl) {
+	setMode, setSpeed := held.FanControl.SetMode, held.FanControl.SetSpeed
+	setOscillating, setSleep := held.FanControl.SetOscillating, held.FanControl.SetSleep
+
+	out.SetMode = func(ctx context.Context, mode FanMode) error {
+		if err := h.holds(held); err != nil {
+			return err
+		}
+
+		return setMode(ctx, mode)
+	}
+
+	out.SetSpeed = func(ctx context.Context, speed Level) error {
+		if err := h.holds(held); err != nil {
+			return err
+		}
+
+		return setSpeed(ctx, speed)
+	}
+
+	if setOscillating != nil {
+		out.SetOscillating = func(ctx context.Context, on bool) error {
+			if err := h.holds(held); err != nil {
+				return err
+			}
+
+			return setOscillating(ctx, on)
+		}
+	}
+
+	if setSleep != nil {
+		out.SetSleep = func(ctx context.Context, on bool) error {
+			if err := h.holds(held); err != nil {
+				return err
+			}
+
+			return setSleep(ctx, on)
+		}
+	}
+}
+
 // holds says whether the home still holds this very device, and
 // reachable: ErrNoDevice once it is removed or replaced, ErrUnreachable
 // while the home holds it unreachable. The command is called after, with
@@ -324,7 +373,24 @@ func (d *Device) clone() Device {
 		out.LevelControl = &level
 	}
 
+	if d.FanControl != nil {
+		fan := *d.FanControl
+		fan.Oscillating, fan.Sleep = copied(fan.Oscillating), copied(fan.Sleep)
+		out.FanControl = &fan
+	}
+
 	return out
+}
+
+// copied is a flag of the caller's own, or nil for none.
+func copied(flag *bool) *bool {
+	if flag == nil {
+		return nil
+	}
+
+	own := *flag
+
+	return &own
 }
 
 // takes says whether the device can have a change, as ErrDescription
@@ -348,6 +414,8 @@ func (d *Device) takes(change Change) error {
 				change.Level,
 			)
 		}
+	case FanChanged:
+		return d.takesFan(change)
 	case ReachabilityChanged:
 	case ButtonPressed:
 		return d.hasButton(change.Button)
@@ -360,6 +428,28 @@ func (d *Device) takes(change Change) error {
 	}
 
 	return nil
+}
+
+// takesFan is takes for a fan.
+func (d *Device) takesFan(change FanChanged) error {
+	fan := d.FanControl
+
+	switch {
+	case fan == nil:
+		return fmt.Errorf("%w: %q has no fan, and was reported one", ErrDescription, d.ID)
+	case change.Mode < FanOff || change.Mode > FanAuto:
+		return fmt.Errorf("%w: %q was reported the fan mode %d, which is none", ErrDescription, d.ID, change.Mode)
+	case !(change.Speed > 0 && change.Speed <= 1): // not a number is outside too
+		return fmt.Errorf(
+			"%w: %q was reported the fan speed %v, outside above 0 to 1", ErrDescription, d.ID, change.Speed,
+		)
+	case change.Oscillating && fan.Oscillating == nil:
+		return fmt.Errorf("%w: %q does not oscillate, and was reported to", ErrDescription, d.ID)
+	case change.Sleep && fan.Sleep == nil:
+		return fmt.Errorf("%w: %q has no sleep mode, and was reported in it", ErrDescription, d.ID)
+	default:
+		return nil
+	}
 }
 
 // hasButton is takes for a button.
@@ -387,12 +477,37 @@ func (d *Device) apply(change Change) bool {
 		}
 
 		d.LevelControl.Level = change.Level
+	case FanChanged:
+		return d.FanControl.apply(change)
 	case ReachabilityChanged:
 		if d.Unreachable == change.Unreachable {
 			return false
 		}
 
 		d.Unreachable = change.Unreachable
+	}
+
+	return true
+}
+
+// apply is Device.apply for a fan.
+func (f *FanControl) apply(change FanChanged) bool {
+	oscillating := f.Oscillating != nil && *f.Oscillating
+	sleep := f.Sleep != nil && *f.Sleep
+
+	if f.Mode == change.Mode && f.Speed == change.Speed && f.Running == change.Running &&
+		oscillating == change.Oscillating && sleep == change.Sleep {
+		return false
+	}
+
+	f.Mode, f.Speed, f.Running = change.Mode, change.Speed, change.Running
+
+	if f.Oscillating != nil {
+		f.Oscillating = &change.Oscillating
+	}
+
+	if f.Sleep != nil {
+		f.Sleep = &change.Sleep
 	}
 
 	return true

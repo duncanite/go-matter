@@ -48,6 +48,9 @@ type Fake struct {
 // shows.
 const lowest matter.Level = 0.01
 
+// fanSteps is how many speeds a Fan has.
+const fanSteps = 10
+
 // Light puts an on/off light in home, off, named as its ID. Like Dimmer
 // and Plug, it panics on a device the home refuses, an empty ID: a test
 // that asks for one is wrong, and has no error to check.
@@ -65,6 +68,39 @@ func Dimmer(home *matter.Home, id matter.ID) *Fake {
 // Plug puts an outlet in home, off, named as its ID.
 func Plug(home *matter.Home, id matter.ID) *Fake {
 	return put(home, id, matter.Plug, false)
+}
+
+// Fan puts a fan in home, off, named as its ID: one of ten speeds, at
+// full, that oscillates and has a sleep mode. Switched on or sent a
+// speed, it runs; left to itself, it runs too; switched off, it stops.
+func Fan(home *matter.Home, id matter.ID) *Fake {
+	return putFan(home, id, matter.Fan)
+}
+
+// Purifier is Fan as an air purifier.
+func Purifier(home *matter.Home, id matter.ID) *Fake {
+	return putFan(home, id, matter.AirPurifier)
+}
+
+// putFan is put for a fan.
+func putFan(home *matter.Home, named matter.ID, kind matter.Kind) *Fake {
+	fake := &Fake{home: home, id: named}
+
+	var still, awake bool
+
+	err := home.Put(matter.Device{
+		ID: named, Name: string(named), Kind: kind,
+		FanControl: &matter.FanControl{
+			Mode: matter.FanOff, Speed: 1, Steps: fanSteps, Oscillating: &still, Sleep: &awake,
+			SetMode: fake.setFanMode, SetSpeed: fake.setFanSpeed,
+			SetOscillating: fake.setOscillating, SetSleep: fake.setSleep,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return fake
 }
 
 // put makes the fake and puts its device in the home. What the home
@@ -157,6 +193,63 @@ func (f *Fake) stop(context.Context) error {
 	return f.take(Stop{})
 }
 
+// fanned reports the fan as it stands once change has been made to it.
+func (f *Fake) fanned(change func(*matter.FanChanged)) error {
+	held, _ := f.home.Device(f.id)
+	fan := held.FanControl
+
+	now := matter.FanChanged{
+		Mode: fan.Mode, Speed: fan.Speed, Running: fan.Running,
+		Oscillating: *fan.Oscillating, Sleep: *fan.Sleep,
+	}
+
+	change(&now)
+
+	return f.home.Report(f.id, now)
+}
+
+// setFanMode refuses, as a device would, a mode that is none.
+func (f *Fake) setFanMode(_ context.Context, mode matter.FanMode) error {
+	if err := f.take(SetFanMode{Mode: mode}); err != nil {
+		return err
+	}
+
+	if mode < matter.FanOff || mode > matter.FanAuto {
+		return fmt.Errorf("%w: the fan mode %d", matter.ErrInvalid, mode)
+	}
+
+	return f.fanned(func(now *matter.FanChanged) { now.Mode, now.Running = mode, mode != matter.FanOff })
+}
+
+// setFanSpeed refuses a speed outside a level's range.
+func (f *Fake) setFanSpeed(_ context.Context, speed matter.Level) error {
+	if err := f.take(SetFanSpeed{Speed: speed}); err != nil {
+		return err
+	}
+
+	if !(speed > 0 && speed <= 1) {
+		return fmt.Errorf("%w: the fan speed %v", matter.ErrInvalid, speed)
+	}
+
+	return f.fanned(func(now *matter.FanChanged) { now.Mode, now.Speed, now.Running = matter.FanOn, speed, true })
+}
+
+func (f *Fake) setOscillating(_ context.Context, on bool) error {
+	if err := f.take(SetOscillating{On: on}); err != nil {
+		return err
+	}
+
+	return f.fanned(func(now *matter.FanChanged) { now.Oscillating = on })
+}
+
+func (f *Fake) setSleep(_ context.Context, on bool) error {
+	if err := f.take(SetSleep{On: on}); err != nil {
+		return err
+	}
+
+	return f.fanned(func(now *matter.FanChanged) { now.Sleep = on })
+}
+
 // Ask is one command a Fake was sent: one of the types below.
 type Ask interface{ ask() }
 
@@ -172,9 +265,22 @@ type (
 	Move struct{ Direction matter.Direction }
 	// Stop is LevelControl.Stop.
 	Stop struct{}
+	// SetFanMode is FanControl.SetMode.
+	SetFanMode struct{ Mode matter.FanMode }
+	// SetFanSpeed is FanControl.SetSpeed.
+	SetFanSpeed struct{ Speed matter.Level }
+	// SetOscillating is FanControl.SetOscillating.
+	SetOscillating struct{ On bool }
+	// SetSleep is FanControl.SetSleep.
+	SetSleep struct{ On bool }
 )
 
 func (SetOn) ask()    {}
 func (SetLevel) ask() {}
 func (Move) ask()     {}
 func (Stop) ask()     {}
+
+func (SetFanMode) ask()     {}
+func (SetFanSpeed) ask()    {}
+func (SetOscillating) ask() {}
+func (SetSleep) ask()       {}

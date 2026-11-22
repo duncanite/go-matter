@@ -21,6 +21,7 @@ import (
 	basicdef "github.com/SukramJ/go-fabric/cluster/spec/basicinformation"
 	bridgeddef "github.com/SukramJ/go-fabric/cluster/spec/bridgeddevicebasicinformation"
 	descriptordef "github.com/SukramJ/go-fabric/cluster/spec/descriptor"
+	fancontroldef "github.com/SukramJ/go-fabric/cluster/spec/fancontrol"
 	fixedlabeldef "github.com/SukramJ/go-fabric/cluster/spec/fixedlabel"
 	levelcontroldef "github.com/SukramJ/go-fabric/cluster/spec/levelcontrol"
 	onoffdef "github.com/SukramJ/go-fabric/cluster/spec/onoff"
@@ -30,6 +31,7 @@ import (
 	"github.com/SukramJ/go-fabric/controller/client"
 	"github.com/SukramJ/go-fabric/controller/commissioner"
 	"github.com/SukramJ/go-fabric/controller/dcl/snapshot"
+	"github.com/SukramJ/go-fabric/im"
 
 	"github.com/duncanite/go-matter"
 )
@@ -43,6 +45,8 @@ const (
 	typeOnOffPlug       uint32 = 0x010A
 	typeDimmablePlug    uint32 = 0x010B
 	typeGenericSwitch   uint32 = 0x000F
+	typeFan             uint32 = 0x002B
+	typeAirPurifier     uint32 = 0x002D
 	controllerStateFile        = "controller.db"
 	maxTransition              = math.MaxUint16 * tenth
 	seeding                    = 30 * time.Second
@@ -636,8 +640,10 @@ func (c *Controller) keep(described matter.Device) {
 	held, known := c.home.Device(described.ID)
 
 	// A remote is one button on this side, always: what can differ is
-	// what is said of a device, and whether it has a level.
-	if !known || held.Info != described.Info || (held.LevelControl == nil) != (described.LevelControl == nil) {
+	// what is said of a device, whether it has a level, and what its fan
+	// can do.
+	if !known || held.Info != described.Info || (held.LevelControl == nil) != (described.LevelControl == nil) ||
+		fanShape(&held) != fanShape(&described) {
 		if err := c.home.Put(described); err != nil {
 			slog.Warn("a device of a node is left out", "error", err)
 		}
@@ -655,6 +661,13 @@ func (c *Controller) keep(described matter.Device) {
 		changes = append(changes, matter.LevelChanged{Level: described.LevelControl.Level})
 	}
 
+	if fan := described.FanControl; fan != nil {
+		changes = append(changes, matter.FanChanged{
+			Mode: fan.Mode, Speed: fan.Speed, Running: fan.Running,
+			Oscillating: fan.Oscillating != nil && *fan.Oscillating, Sleep: fan.Sleep != nil && *fan.Sleep,
+		})
+	}
+
 	if err := c.home.Report(described.ID, changes...); err != nil {
 		slog.Warn("a device of a node could not be followed", "error", err)
 	}
@@ -665,23 +678,7 @@ func (c *Controller) keep(described matter.Device) {
 func (c *Controller) describe(held *client.Node, endpoint *client.Endpoint, prefix string) (matter.Device, bool) {
 	said, _ := descriptordef.StateFrom(endpoint.Cluster(descriptordef.ClusterID))
 
-	kind, dims, known := matter.Kind(0), false, false
-
-	for _, listed := range said.DeviceTypeList {
-		switch listed.DeviceType {
-		case typeOnOffLight:
-			kind, known = matter.Light, true
-		case typeDimmableLight, typeColorTempLight, typeExtendedColor:
-			kind, dims, known = matter.Light, true, true
-		case typeOnOffPlug:
-			kind, known = matter.Plug, true
-		case typeDimmablePlug:
-			kind, dims, known = matter.Plug, true, true
-		case typeGenericSwitch:
-			kind, known = matter.Remote, true
-		}
-	}
-
+	kind, dims, known := kindOf(said.DeviceTypeList)
 	if !known {
 		return matter.Device{}, false
 	}
@@ -714,6 +711,12 @@ func (c *Controller) describe(held *client.Node, endpoint *client.Endpoint, pref
 		return described, true
 	}
 
+	if kind == matter.Fan || kind == matter.AirPurifier {
+		described.FanControl = c.fan(held, endpoint, described.ID)
+
+		return described, true
+	}
+
 	stands, _ := onoffdef.StateFrom(endpoint.Cluster(onoffdef.ClusterID))
 	described.OnOff = &matter.OnOff{On: stands.OnOff, Set: c.setOn(held, number)}
 
@@ -734,6 +737,165 @@ func (c *Controller) describe(held *client.Node, endpoint *client.Endpoint, pref
 	}
 
 	return described, true
+}
+
+// kindOf is the kind of device an endpoint's device types make it,
+// whether it has a level, and whether the vocabulary has a word for it
+// at all.
+func kindOf(types []descriptordef.DeviceTypeStruct) (kind matter.Kind, dims, known bool) {
+	for _, listed := range types {
+		switch listed.DeviceType {
+		case typeOnOffLight:
+			kind, known = matter.Light, true
+		case typeDimmableLight, typeColorTempLight, typeExtendedColor:
+			kind, dims, known = matter.Light, true, true
+		case typeOnOffPlug:
+			kind, known = matter.Plug, true
+		case typeDimmablePlug:
+			kind, dims, known = matter.Plug, true, true
+		case typeGenericSwitch:
+			kind, known = matter.Remote, true
+		case typeFan:
+			kind, known = matter.Fan, true
+		case typeAirPurifier:
+			kind, known = matter.AirPurifier, true
+		}
+	}
+
+	return kind, dims, known
+}
+
+// fanShape is what a device's fan can do, which does not change while
+// the device is the same: whether it has one, its steps, and whether it
+// oscillates and sleeps.
+func fanShape(described *matter.Device) [4]int {
+	fan := described.FanControl
+	if fan == nil {
+		return [4]int{}
+	}
+
+	shape := [4]int{1, fan.Steps, 0, 0}
+
+	if fan.Oscillating != nil {
+		shape[2] = 1
+	}
+
+	if fan.Sleep != nil {
+		shape[3] = 1
+	}
+
+	return shape
+}
+
+// fan is an endpoint's fan. Matter says no speed of a fan that is off or
+// left to itself: it then has the speed it last said here, and full when
+// it said none.
+func (c *Controller) fan(held *client.Node, endpoint *client.Endpoint, device matter.ID) *matter.FanControl {
+	said, _ := fancontroldef.StateFrom(endpoint.Cluster(fancontroldef.ClusterID))
+	number, steps := endpoint.Number(), int(said.SpeedMax)
+
+	fan := &matter.FanControl{
+		Mode: matter.FanOn, Speed: 1, Running: said.PercentCurrent > 0, Steps: steps,
+		SetMode: c.setFanMode(held, number), SetSpeed: c.setFanSpeed(held, number, steps),
+	}
+
+	switch said.FanMode {
+	case fancontroldef.FanModeOff:
+		fan.Mode = matter.FanOff
+	case fancontroldef.FanModeAuto:
+		fan.Mode = matter.FanAuto
+	case fancontroldef.FanModeLow, fancontroldef.FanModeMedium, fancontroldef.FanModeHigh,
+		fancontroldef.FanModeOn, fancontroldef.FanModeSmart:
+	}
+
+	switch {
+	case steps > 0 && said.SpeedSetting != nil && *said.SpeedSetting > 0:
+		fan.Speed = matter.Level(*said.SpeedSetting) / matter.Level(steps)
+	case said.PercentSetting != nil && *said.PercentSetting > 0:
+		fan.Speed = matter.Level(*said.PercentSetting) / percentFull
+	case steps > 0 && said.SpeedCurrent > 0:
+		fan.Speed = matter.Level(said.SpeedCurrent) / matter.Level(steps)
+	case said.PercentCurrent > 0:
+		fan.Speed = matter.Level(said.PercentCurrent) / percentFull
+	default:
+		if was, known := c.home.Device(device); known && was.FanControl != nil {
+			fan.Speed = was.FanControl.Speed
+		}
+	}
+
+	fan.Speed = min(fan.Speed, 1)
+
+	if said.RockSupport&fancontroldef.RockRockLeftRight != 0 {
+		oscillating := said.RockSetting&fancontroldef.RockRockLeftRight != 0
+		fan.Oscillating = &oscillating
+		fan.SetOscillating = c.setFanFlag(
+			held,
+			number,
+			fancontroldef.AttrRockSetting,
+			uint8(fancontroldef.RockRockLeftRight),
+		)
+	}
+
+	if said.WindSupport&fancontroldef.WindSleepWind != 0 {
+		sleep := said.WindSetting&fancontroldef.WindSleepWind != 0
+		fan.Sleep = &sleep
+		fan.SetSleep = c.setFanFlag(held, number, fancontroldef.AttrWindSetting, uint8(fancontroldef.WindSleepWind))
+	}
+
+	return fan
+}
+
+func (c *Controller) setFanMode(held *client.Node, endpoint uint16) func(context.Context, matter.FanMode) error {
+	return func(ctx context.Context, mode matter.FanMode) error {
+		wanted := fancontroldef.FanModeHigh
+
+		switch mode {
+		case matter.FanOff:
+			wanted = fancontroldef.FanModeOff
+		case matter.FanOn:
+		case matter.FanAuto:
+			wanted = fancontroldef.FanModeAuto
+		default:
+			return fmt.Errorf("%w: the fan mode %d", matter.ErrInvalid, mode)
+		}
+
+		return c.writeFan(ctx, held, endpoint, fancontroldef.AttrFanMode, spec.Uint(wanted))
+	}
+}
+
+// setFanSpeed writes a speed as one of the fan's steps when it has them,
+// which the other side reads back exactly, and as a percent otherwise.
+func (c *Controller) setFanSpeed(
+	held *client.Node, endpoint uint16, steps int,
+) func(context.Context, matter.Level) error {
+	return func(ctx context.Context, speed matter.Level) error {
+		if !(speed > 0 && speed <= 1) {
+			return fmt.Errorf("%w: the fan speed %v", matter.ErrInvalid, speed)
+		}
+
+		if steps > 0 {
+			return c.writeFan(ctx, held, endpoint, fancontroldef.AttrSpeedSetting,
+				spec.Uint(stepOf(speed, steps)))
+		}
+
+		return c.writeFan(ctx, held, endpoint, fancontroldef.AttrPercentSetting,
+			spec.Uint(percentOf(speed)))
+	}
+}
+
+// setFanFlag writes one bit of a fan's rocking or of its wind: the one
+// this vocabulary has a word for.
+func (c *Controller) setFanFlag(
+	held *client.Node, endpoint uint16, attribute uint32, bit uint8,
+) func(context.Context, bool) error {
+	return func(ctx context.Context, on bool) error {
+		wanted := uint8(0)
+		if on {
+			wanted = bit
+		}
+
+		return c.writeFan(ctx, held, endpoint, attribute, spec.Uint(wanted))
+	}
 }
 
 func (c *Controller) setOn(held *client.Node, endpoint uint16) func(context.Context, bool) error {
@@ -799,6 +961,32 @@ func (c *Controller) invoke(
 	defer leave()
 
 	_, err = held.Invoke(ctx, client.CommandAt(endpoint, cluster, command), fields, client.InvokeOptions{})
+
+	return answered(err)
+}
+
+// writeFan writes one attribute of a fan and gives its answer as the
+// vocabulary's error.
+func (c *Controller) writeFan(
+	ctx context.Context, held *client.Node, endpoint uint16, attribute uint32, value spec.Encodable,
+) error {
+	_, leave, err := c.enter()
+	if err != nil {
+		return err
+	}
+
+	defer leave()
+
+	statuses, err := held.Write(ctx, []client.WriteRequest{{
+		Path: im.ConcreteAttributePath{
+			Endpoint: endpoint, Cluster: fancontroldef.ClusterID, Attribute: attribute,
+			HasEndpoint: true, HasCluster: true, HasAttribute: true,
+		},
+		Value: value,
+	}}, client.WriteOptions{})
+	if err == nil {
+		err = statuses.Err()
+	}
 
 	return answered(err)
 }

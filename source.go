@@ -40,6 +40,15 @@ type (
 	// LevelChanged is the device's level having changed, as
 	// LevelControl.Level has it.
 	LevelChanged struct{ Level Level }
+	// FanChanged is how the device's fan stands, whole, as FanControl
+	// has it. Oscillating and Sleep are false for a fan that cannot.
+	FanChanged struct {
+		Mode        FanMode
+		Speed       Level
+		Running     bool
+		Oscillating bool
+		Sleep       bool
+	}
 	// ReachabilityChanged is the source having lost the device, or
 	// found it again.
 	ReachabilityChanged struct{ Unreachable bool }
@@ -57,6 +66,7 @@ type (
 
 func (OnOffChanged) change()        {}
 func (LevelChanged) change()        {}
+func (FanChanged) change()          {}
 func (ReachabilityChanged) change() {}
 func (ButtonPressed) change()       {}
 func (ButtonReleased) change()      {}

@@ -51,6 +51,21 @@ func (w *wired) dimmer(id matter.ID) matter.Device {
 	}
 }
 
+func (w *wired) fan(id matter.ID) matter.Device {
+	var still, awake bool
+
+	return matter.Device{
+		ID: id, Name: string(id), Kind: matter.Fan,
+		FanControl: &matter.FanControl{
+			Mode: matter.FanOff, Speed: 1, Steps: 10, Oscillating: &still, Sleep: &awake,
+			SetMode:        func(_ context.Context, mode matter.FanMode) error { return w.note("mode %d", mode) },
+			SetSpeed:       func(_ context.Context, speed matter.Level) error { return w.note("speed %v", speed) },
+			SetOscillating: func(_ context.Context, on bool) error { return w.note("oscillating %t", on) },
+			SetSleep:       func(_ context.Context, on bool) error { return w.note("sleep %t", on) },
+		},
+	}
+}
+
 func remote(id matter.ID) matter.Device {
 	return matter.Device{ID: id, Kind: matter.Remote, Buttons: []matter.Button{{Label: "On"}, {Label: "Off"}}}
 }
@@ -694,5 +709,163 @@ func TestHomeWatchersAreApart(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) || handed != 1 {
 		t.Fatalf("a watch that ended at its first event was handed %d, and returned %v", handed, err)
+	}
+}
+
+// TestHomeHoldsAFan: a fan is held as a value, follows what is reported
+// of it, whole, and is answered for as every device is.
+func TestHomeHoldsAFan(t *testing.T) {
+	t.Parallel()
+
+	var (
+		home matter.Home
+		w    wired
+	)
+
+	ctx := t.Context()
+	put := w.fan("fan")
+
+	if err := errors.Join(home.Put(put), home.Put(w.dimmer("lamp"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// The home took its own copy, and hands out the caller's own.
+	*put.FanControl.Oscillating = true
+
+	fan, _ := home.Device("fan")
+	if *fan.FanControl.Oscillating {
+		t.Fatal("the home's fan followed the caller's")
+	}
+
+	*fan.FanControl.Sleep, fan.FanControl.Speed = true, 0.1
+
+	if again, _ := home.Device("fan"); *again.FanControl.Sleep || again.FanControl.Speed != 1 {
+		t.Fatalf("the home followed a copy it handed out: %+v", again.FanControl)
+	}
+
+	told, cancel, _ := watch(t, &home)
+	defer cancel()
+
+	if first, second := next(t, told), next(t, told); first != "fan added" || second != "lamp added" {
+		t.Fatalf("a watcher's first look: %s, %s", first, second)
+	}
+
+	// What changes is told, whole; what does not is not.
+	for _, step := range []struct {
+		change matter.FanChanged
+		told   bool
+	}{
+		{matter.FanChanged{Mode: matter.FanOff, Speed: 1}, false},
+		{matter.FanChanged{Mode: matter.FanOn, Speed: 1, Running: true}, true},
+		{matter.FanChanged{Mode: matter.FanOn, Speed: 1, Running: true}, false},
+		{matter.FanChanged{Mode: matter.FanOn, Speed: 0.4, Running: true}, true},
+		{matter.FanChanged{Mode: matter.FanOn, Speed: 0.4}, true},
+		{matter.FanChanged{Mode: matter.FanAuto, Speed: 0.4}, true},
+		{matter.FanChanged{Mode: matter.FanAuto, Speed: 0.4, Oscillating: true}, true},
+		{matter.FanChanged{Mode: matter.FanAuto, Speed: 0.4, Oscillating: true, Sleep: true}, true},
+		{matter.FanChanged{Mode: matter.FanAuto, Speed: 0.4, Oscillating: true, Sleep: true}, false},
+	} {
+		if err := home.Report("fan", step.change); err != nil {
+			t.Fatalf("%#v: %v", step.change, err)
+		}
+
+		if !step.told {
+			quiet(t, told)
+		} else if got := next(t, told); got != fmt.Sprintf("fan %T%v", step.change, step.change) {
+			t.Fatalf("%#v: told %s", step.change, got)
+		}
+	}
+
+	fan, _ = home.Device("fan")
+	if now := fan.FanControl; now.Mode != matter.FanAuto || now.Speed != 0.4 || now.Running ||
+		!*now.Oscillating || !*now.Sleep || now.Steps != 10 {
+		t.Fatalf("the fan's state did not follow: %+v", now)
+	}
+
+	// A fan that neither oscillates nor sleeps is handed out so.
+	plain := w.fan("plain")
+	plain.FanControl.Oscillating, plain.FanControl.SetOscillating = nil, nil
+	plain.FanControl.Sleep, plain.FanControl.SetSleep = nil, nil
+
+	if err := home.Put(plain); err != nil {
+		t.Fatal(err)
+	}
+
+	if next(t, told) != "plain added" {
+		t.Fatal("a fan put was not told added")
+	}
+
+	if handed, _ := home.Device("plain"); handed.FanControl.Oscillating != nil || handed.FanControl.Sleep != nil ||
+		handed.FanControl.SetOscillating != nil || handed.FanControl.SetSleep != nil {
+		t.Fatal("a fan put without oscillation and sleep was handed out with them")
+	}
+
+	// What a device cannot have is refused, and told to no one.
+	turning := matter.FanChanged{Mode: matter.FanOn, Speed: 0.5, Running: true}
+
+	for name, row := range map[string]struct {
+		id     matter.ID
+		change matter.FanChanged
+	}{
+		"a lamp's fan":            {"lamp", turning},
+		"no mode":                 {"fan", matter.FanChanged{Speed: 0.5}},
+		"a mode that is not one":  {"fan", matter.FanChanged{Mode: matter.FanAuto + 1, Speed: 0.5}},
+		"a speed of zero":         {"fan", matter.FanChanged{Mode: matter.FanOn}},
+		"a speed above full":      {"fan", matter.FanChanged{Mode: matter.FanOn, Speed: 1.5}},
+		"a speed not one":         {"fan", matter.FanChanged{Mode: matter.FanOn, Speed: matter.Level(math.NaN())}},
+		"oscillating, and cannot": {"plain", matter.FanChanged{Mode: matter.FanOn, Speed: 0.5, Oscillating: true}},
+		"asleep, and cannot":      {"plain", matter.FanChanged{Mode: matter.FanOn, Speed: 0.5, Sleep: true}},
+	} {
+		if err := home.Report(row.id, row.change); !errors.Is(err, matter.ErrDescription) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+
+	quiet(t, told)
+
+	// Its commands reach it, and it is answered for when it cannot be.
+	if err := errors.Join(
+		fan.FanControl.SetMode(ctx, matter.FanOn),
+		fan.FanControl.SetSpeed(ctx, 0.3),
+		fan.FanControl.SetOscillating(ctx, true),
+		fan.FanControl.SetSleep(ctx, false),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"mode 2", "speed 0.3", "oscillating true", "sleep false"}
+	if got := w.got(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the commands reached the fan as %v", got)
+	}
+
+	if err := home.Report("fan", matter.ReachabilityChanged{Unreachable: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	commands := func() map[string]error {
+		return map[string]error{
+			"mode":      fan.FanControl.SetMode(ctx, matter.FanOff),
+			"speed":     fan.FanControl.SetSpeed(ctx, 1),
+			"oscillate": fan.FanControl.SetOscillating(ctx, false),
+			"sleep":     fan.FanControl.SetSleep(ctx, true),
+		}
+	}
+
+	for name, err := range commands() {
+		if !errors.Is(err, matter.ErrUnreachable) {
+			t.Errorf("%s of an unreachable fan: %v", name, err)
+		}
+	}
+
+	home.Remove("fan")
+
+	for name, err := range commands() {
+		if !errors.Is(err, matter.ErrNoDevice) {
+			t.Errorf("%s of a fan removed: %v", name, err)
+		}
+	}
+
+	if got := w.got(); len(got) != len(want) {
+		t.Fatalf("a fan that could not be asked was asked: %v", got[len(want):])
 	}
 }

@@ -57,9 +57,10 @@ All of it is built: package `matter`, the bridge, the controller, and `mattertes
 6. **The zero value is the safe one.** A zero `Device` is reachable, a zero `Trust` is
    the strictest, a zero `Home` is empty and ready, a nil command is one the device does
    not have.
-7. **A word exists when a device needs it.** Three kinds of device and two capabilities,
-   because the first devices to be served are switches, dimmers, plugs and button
-   remotes. Matter has many more device types; each is added the day one is served.
+7. **A word exists when a device needs it.** Five kinds of device and three
+   capabilities, because the devices served so far are switches, dimmers, plugs, button
+   remotes, fans and air purifiers. Matter has many more device types; each is added the
+   day one is served.
 8. **No numbers, and nothing of the implementation.** No endpoint, cluster, attribute or
    command identifier appears; a level is a fraction and a time is a `time.Duration`. No
    exported type, error or option belongs to the library underneath, and there is no way
@@ -79,6 +80,13 @@ All of it is built: package `matter`, the bridge, the controller, and `mattertes
   has it and as a wall dimmer behaves. `LevelControl.Set` brings the device on, which is
   what dimmers do; `OnOff.Set(true)` returns it to where it was. A home keeps that level
   for an adapter whose hub does not.
+- **A fan is off, on or left to itself, and has a speed beside.** Which of low, medium
+  and high a speed is would be someone's guess, so the vocabulary has no such words: a
+  speed is a fraction of the fastest, and a fan that has steps says how many. A fan that
+  is off, or that chooses its own speed, keeps the one it comes back to, as a dimmer
+  keeps its level. What a fan does is told whole, in one change: its mode, its speed and
+  whether it turns move together, and a watcher told them apart would see states the fan
+  was never in.
 - **A command returns when it is taken, not when it is done.** What the device then does
   arrives as an event like any other, so state is never guessed at.
 - **An unreachable device is answered for by its source.** Its commands return
@@ -116,9 +124,14 @@ text for this document.
 | `Plug` with `OnOff` | On/Off Plug-in Unit |
 | `Plug` with `LevelControl` | Dimmable Plug-in Unit |
 | `Remote` | one Generic Switch per button, labelled |
+| `Fan`, `AirPurifier` | Fan, Air Purifier |
 | `OnOff` | the On/Off cluster: On, Off and Toggle all arrive as `Set` |
 | `LevelControl.Set` | Level Control's MoveToLevel, with the device on or coming on |
 | `LevelControl.Move`, `Stop` | Level Control's Move and Stop |
+| `FanControl.Mode` | Fan Control's FanMode, of the sequence off, high and auto: on is High, and Low and Medium written by a controller are on |
+| `FanControl.Speed` | PercentSetting, and SpeedSetting of SpeedMax for a fan with `Steps`, which is what is written and read when there are steps |
+| `FanControl.Running` | PercentCurrent and SpeedCurrent, zero for a fan that does not turn |
+| `FanControl.Oscillating`, `Sleep` | RockSetting's left and right, WindSetting's sleep wind |
 | `Level`, above 0 to 1 | CurrentLevel, 1 to 254 |
 | a `time.Duration` | TransitionTime, in tenths of a second |
 | `ButtonPressed`, `ButtonReleased` | the Switch cluster's InitialPress and ShortRelease; LongPress and MultiPress derived by the bridge |
@@ -129,6 +142,11 @@ text for this document.
 A level asked of a device that is off, without switching it on, is something Matter has
 and the vocabulary does not: the bridge keeps that level and uses it at the next
 `OnOff.Set(true)`.
+
+Matter says no speed of a fan that is off, and none of one left to itself: PercentSetting
+is zero for the one and null for the other. A controller keeps the speed the fan last
+said, and takes it for full when it said none. A controller's write of what a fan
+already is at reaches no one: Matter's fan compares before it asks.
 
 | Error | Status sent, and read back as the same error |
 | --- | --- |

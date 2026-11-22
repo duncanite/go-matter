@@ -39,6 +39,10 @@ const (
 	Plug
 	// Remote is a set of buttons that controls nothing by itself.
 	Remote
+	// Fan is a fan.
+	Fan
+	// AirPurifier is a fan that cleans the air it moves.
+	AirPurifier
 )
 
 // Info describes a device: what does not change while it runs.
@@ -72,6 +76,7 @@ type Device struct {
 
 	OnOff        *OnOff
 	LevelControl *LevelControl
+	FanControl   *FanControl
 	Buttons      []Button
 }
 
@@ -117,6 +122,55 @@ const (
 	Down
 )
 
+// FanControl is a device that moves air: a Fan's, or an AirPurifier's.
+type FanControl struct {
+	// Mode is what the fan is set to do.
+	Mode FanMode
+	// Speed is the speed the fan is set to, as a fraction of its fastest.
+	// A fan that is off, or that chooses its own, keeps the speed it
+	// comes back to.
+	Speed Level
+	// Running is whether the fan turns now. One left to itself may not.
+	Running bool
+	// Steps is how many speeds the fan has, and zero for one that takes
+	// any. It does not change while the device runs.
+	Steps int
+	// Oscillating is whether the fan turns from side to side, and Sleep
+	// whether it runs in its quiet mode, for the night. Each is nil for a
+	// fan that cannot.
+	Oscillating *bool
+	Sleep       *bool
+
+	// SetMode switches the fan off, on at the speed it has, or leaves it
+	// to itself. A mode the fan does not have is ErrInvalid.
+	SetMode func(ctx context.Context, mode FanMode) error
+	// SetSpeed brings the fan on at a speed. A fan with steps takes the
+	// nearest of them.
+	SetSpeed func(ctx context.Context, speed Level) error
+	// SetOscillating and SetSleep set what Oscillating and Sleep say.
+	// Each is nil exactly when its state is.
+	SetOscillating func(ctx context.Context, on bool) error
+	SetSleep       func(ctx context.Context, on bool) error
+}
+
+// FanMode is what a fan is set to do.
+type FanMode int
+
+// The modes.
+const (
+	// FanOff is the fan off.
+	FanOff FanMode = iota + 1
+	// FanOn is the fan on, at the speed it is set to.
+	FanOn
+	// FanAuto is the fan left to itself: on when it finds it has to be,
+	// at the speed it chooses.
+	FanAuto
+)
+
+// maxSteps is the most speeds a fan has: Matter counts them in a byte,
+// and lets them be no more than a hundred.
+const maxSteps = 100
+
 // Button is one button of a Remote. Its position in Device.Buttons is
 // what ButtonPressed and ButtonReleased name.
 type Button struct {
@@ -126,10 +180,15 @@ type Button struct {
 
 // Validate reports a description that cannot be served, as
 // ErrDescription with which of these it is: no ID; no Kind, or one that
-// is not a kind; a Light or Plug without OnOff, or with Buttons; an OnOff
-// without Set; a LevelControl without Set, with a Level outside its
-// range, or with one of Move and Stop and not the other; a Remote
-// without Buttons, or with anything else.
+// is not a kind; a Light or Plug without OnOff, or with Buttons or a
+// FanControl; an OnOff without Set; a LevelControl without Set, with a
+// Level outside its range, or with one of Move and Stop and not the
+// other; a Remote without Buttons, or with anything else; a Fan or an
+// AirPurifier without FanControl, or with anything else; a FanControl
+// without SetMode or SetSpeed, with a Mode that is none, a Speed outside
+// a level's range, Steps below zero or above a hundred, or with one of
+// Oscillating and SetOscillating, or of Sleep and SetSleep, and not the
+// other.
 func (d *Device) Validate() error {
 	switch {
 	case d.ID == "":
@@ -141,11 +200,13 @@ func (d *Device) Validate() error {
 			return fmt.Errorf("%w: %q is a remote and has no buttons", ErrDescription, d.ID)
 		}
 
-		if d.OnOff != nil || d.LevelControl != nil {
+		if d.OnOff != nil || d.LevelControl != nil || d.FanControl != nil {
 			return fmt.Errorf("%w: %q is a remote and has more than buttons", ErrDescription, d.ID)
 		}
 
 		return nil
+	case d.Kind == Fan || d.Kind == AirPurifier:
+		return d.validateFan()
 	default:
 		return fmt.Errorf("%w: %q has no kind, or one that is not a kind", ErrDescription, d.ID)
 	}
@@ -160,6 +221,8 @@ func (d *Device) validateSwitched() error {
 		return fmt.Errorf("%w: %q has an OnOff that cannot be set", ErrDescription, d.ID)
 	case len(d.Buttons) > 0:
 		return fmt.Errorf("%w: %q is a light or a plug and has buttons", ErrDescription, d.ID)
+	case d.FanControl != nil:
+		return fmt.Errorf("%w: %q is a light or a plug and has a FanControl", ErrDescription, d.ID)
 	case d.LevelControl == nil:
 		return nil
 	case d.LevelControl.Set == nil:
@@ -168,6 +231,32 @@ func (d *Device) validateSwitched() error {
 		return fmt.Errorf("%w: %q has the level %v, outside above 0 to 1", ErrDescription, d.ID, d.LevelControl.Level)
 	case (d.LevelControl.Move == nil) != (d.LevelControl.Stop == nil):
 		return fmt.Errorf("%w: %q has one of Move and Stop without the other", ErrDescription, d.ID)
+	default:
+		return nil
+	}
+}
+
+// validateFan is Validate for a Fan or an AirPurifier.
+func (d *Device) validateFan() error {
+	fan := d.FanControl
+
+	switch {
+	case fan == nil:
+		return fmt.Errorf("%w: %q is a fan and has no FanControl", ErrDescription, d.ID)
+	case d.OnOff != nil || d.LevelControl != nil || len(d.Buttons) > 0:
+		return fmt.Errorf("%w: %q is a fan and has more than a FanControl", ErrDescription, d.ID)
+	case fan.SetMode == nil || fan.SetSpeed == nil:
+		return fmt.Errorf("%w: %q has a FanControl whose mode or speed cannot be set", ErrDescription, d.ID)
+	case fan.Mode < FanOff || fan.Mode > FanAuto:
+		return fmt.Errorf("%w: %q has the fan mode %d, which is none", ErrDescription, d.ID, fan.Mode)
+	case !(fan.Speed > 0 && fan.Speed <= 1): // not a number is outside too
+		return fmt.Errorf("%w: %q has the fan speed %v, outside above 0 to 1", ErrDescription, d.ID, fan.Speed)
+	case fan.Steps < 0 || fan.Steps > maxSteps:
+		return fmt.Errorf("%w: %q has %d fan speeds, outside 0 to %d", ErrDescription, d.ID, fan.Steps, maxSteps)
+	case (fan.Oscillating == nil) != (fan.SetOscillating == nil):
+		return fmt.Errorf("%w: %q has one of Oscillating and SetOscillating without the other", ErrDescription, d.ID)
+	case (fan.Sleep == nil) != (fan.SetSleep == nil):
+		return fmt.Errorf("%w: %q has one of Sleep and SetSleep without the other", ErrDescription, d.ID)
 	default:
 		return nil
 	}
