@@ -1,7 +1,7 @@
 filippo.io/nistec v0.0.4 h1:F14ZHT5htWlMnQVPndX9ro9arf56cBhQxq4LnDI491s=
 filippo.io/nistec v0.0.4/go.mod h1:PK/lw8I1gQT4hUML4QGaqljwdDaFcMyFKSXN7kjrtKI=
-github.com/SukramJ/go-fabric v0.22.3-0.20261114153753-9abb2e9e4e2f h1:K129miJv9sbANk0+PyWEaeRjsCTV/RvERsPbKKl8CKE=
-github.com/SukramJ/go-fabric v0.22.3-0.20261114153753-9abb2e9e4e2f/go.mod h1:sonXJfocMorsghjOG4Gn4nQ9G+YdCqF6Q11UTGEG9JA=
+github.com/SukramJ/go-fabric v0.23.0 h1:FmLvYkSpmXMgYGGXs+S4y8rpg6xMZhQr1xj2BkEy4aE=
+github.com/SukramJ/go-fabric v0.23.0/go.mod h1:sonXJfocMorsghjOG4Gn4nQ9G+YdCqF6Q11UTGEG9JA=
 github.com/dustin/go-humanize v1.1.0 h1:dbKTrvD0klcbBV/h4AWJdMuZogJACoMlvWIWZ5b2xWg=
 github.com/dustin/go-humanize v1.1.0/go.mod h1:hc1CvRkJMsgxqjmjMQF3QNRAZBwY8AXBAzKYoSX9sFI=
 github.com/forkcloser/xos v0.1.1 h1:0ooxYTQyLUOt2rX/O4JzMAGz1psiWxZUfp5hvGm1TB8=

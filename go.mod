@@ -3,7 +3,7 @@ module github.com/duncanite/go-matter
 go 1.27.4
 
 require (
-	github.com/SukramJ/go-fabric v0.22.3-0.20261114153753-9abb2e9e4e2f
+	github.com/SukramJ/go-fabric v0.23.0
 	github.com/forkcloser/xos v0.1.1
 	github.com/mycophonic/primordium v0.15.1
 )
