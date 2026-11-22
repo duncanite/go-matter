@@ -560,7 +560,7 @@ func (h *served) reachable(ctx context.Context, reachable bool) {
 	h.mu.Unlock()
 
 	for _, made := range h.devices {
-		made.SetReachable(ctx, reachable)
+		warn(ctx, h.device.ID, made.SetReachable(ctx, reachable))
 	}
 }
 
