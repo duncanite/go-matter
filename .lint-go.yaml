@@ -12,6 +12,12 @@ golangci:
         - path: example_test\.go
           linters:
             - testableexamples
+        # The vocabulary is its types: a capability, a change and what a
+        # test device was asked are each a struct of a field or two, and
+        # there are as many as a home's devices have things to say. A count
+        # of them measures the vocabulary, not a package doing too much.
+        - path: ^(matter|source|mattertest/mattertest)\.go$
+          text: max-public-structs
     settings:
       depguard:
         rules:

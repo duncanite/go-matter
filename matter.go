@@ -78,6 +78,14 @@ type Device struct {
 	LevelControl *LevelControl
 	FanControl   *FanControl
 	Buttons      []Button
+
+	// What an AirPurifier may have beside its fan: what it reads of the
+	// air it moves, the filters it moves it through, and a heater.
+	Temperature *Temperature
+	Humidity    *Humidity
+	AirQuality  *AirQuality
+	Filters     []Filter
+	Heater      *Heater
 }
 
 // OnOff is a device that is on or off.
@@ -171,6 +179,103 @@ const (
 // and lets them be no more than a hundred.
 const maxSteps = 100
 
+// Temperature is a device that reads how warm the air is.
+type Temperature struct {
+	// Celsius is what it reads; nil while it reads nothing, a sensor
+	// that is off or starting.
+	Celsius *float64
+}
+
+// Humidity is a device that reads how damp the air is.
+type Humidity struct {
+	// Percent is the relative humidity it reads, 0 to 100; nil while it
+	// reads nothing.
+	Percent *float64
+}
+
+// AirQuality is a device that reads how clean the air is.
+type AirQuality struct {
+	// Quality is what the device makes of the air, on Matter's scale.
+	Quality Quality
+	// PM25 and PM10 are the fine and the coarse particles it counts.
+	// Each is nil for a device that does not count them, which does not
+	// change while the device runs. Nothing here is a number with no
+	// unit: an index of its maker's own is not a reading.
+	PM25 *Particulates
+	PM10 *Particulates
+}
+
+// Particulates is particles in the air, by weight.
+type Particulates struct {
+	// Micrograms is how much a cubic metre of air holds; nil while the
+	// device reads nothing.
+	Micrograms *float64
+}
+
+// Quality is how clean the air is: Matter's scale, from a device that
+// cannot say to air that is not to be breathed.
+type Quality int
+
+// The qualities. The zero Quality is one that is not known.
+const (
+	QualityUnknown Quality = iota
+	QualityGood
+	QualityFair
+	QualityModerate
+	QualityPoor
+	QualityVeryPoor
+	QualityExtremelyPoor
+)
+
+// Filter is one filter of an AirPurifier. Its position in Device.Filters
+// is what FilterChanged names.
+type Filter struct {
+	// Kind is what the filter is; a device has one of a kind at most.
+	Kind FilterKind
+	// Left is how much of the filter's life is left, 0 to 1. It is nil
+	// for a filter that does not say, which does not change while the
+	// device runs.
+	Left *float64
+	// Replace is the filter being due to be replaced.
+	Replace bool
+}
+
+// FilterKind is what a filter is made to take out of the air.
+type FilterKind int
+
+// The kinds of filter.
+const (
+	// HEPA takes out particles.
+	HEPA FilterKind = iota + 1
+	// Carbon, activated, takes out gases.
+	Carbon
+)
+
+// Heater is a device that warms the air it moves, up to a temperature.
+type Heater struct {
+	// On is whether it is set to heat, and Heating whether it heats now:
+	// set to heat, it stops when the room is at its target.
+	On      bool
+	Heating bool
+	// Target is the temperature it heats to, in Celsius, between Least
+	// and Most, which do not change while the device runs.
+	Target float64
+	Least  float64
+	Most   float64
+
+	// SetOn sets it to heat, to the target it has, or to heat no more.
+	SetOn func(ctx context.Context, on bool) error
+	// SetTarget sets the temperature it heats to. One outside Least to
+	// Most is ErrInvalid.
+	SetTarget func(ctx context.Context, celsius float64) error
+}
+
+// The temperatures Matter has a number for, in Celsius.
+const (
+	coldest = -273.15
+	hottest = 327.67
+)
+
 // Button is one button of a Remote. Its position in Device.Buttons is
 // what ButtonPressed and ButtonReleased name.
 type Button struct {
@@ -188,11 +293,20 @@ type Button struct {
 // without SetMode or SetSpeed, with a Mode that is none, a Speed outside
 // a level's range, Steps below zero or above a hundred, or with one of
 // Oscillating and SetOscillating, or of Sleep and SetSleep, and not the
-// other.
+// other; anything but an AirPurifier with a Temperature, a Humidity, an
+// AirQuality, Filters or a Heater; a Temperature outside what Matter has
+// a number for, a Humidity outside 0 to 100, an AirQuality with a
+// Quality that is none or particulates below zero, a Filter of no kind,
+// of a kind the device has already, or with a Left outside 0 to 1; a
+// Heater without SetOn or SetTarget, with a Least that is not below its
+// Most, either outside what Matter has a number for, or a Target outside
+// the two.
 func (d *Device) Validate() error {
 	switch {
 	case d.ID == "":
 		return fmt.Errorf("%w: it has no ID", ErrDescription)
+	case d.Kind != AirPurifier && d.hasAir():
+		return fmt.Errorf("%w: %q is no air purifier, and has what only one has", ErrDescription, d.ID)
 	case d.Kind == Light || d.Kind == Plug:
 		return d.validateSwitched()
 	case d.Kind == Remote:
@@ -206,7 +320,11 @@ func (d *Device) Validate() error {
 
 		return nil
 	case d.Kind == Fan || d.Kind == AirPurifier:
-		return d.validateFan()
+		if err := d.validateFan(); err != nil {
+			return err
+		}
+
+		return d.validateAir()
 	default:
 		return fmt.Errorf("%w: %q has no kind, or one that is not a kind", ErrDescription, d.ID)
 	}
@@ -260,4 +378,91 @@ func (d *Device) validateFan() error {
 	default:
 		return nil
 	}
+}
+
+// hasAir says whether the device has anything of what an AirPurifier
+// has beside its fan.
+func (d *Device) hasAir() bool {
+	return d.Temperature != nil || d.Humidity != nil || d.AirQuality != nil || len(d.Filters) > 0 || d.Heater != nil
+}
+
+// validateAir is Validate for what an AirPurifier has beside its fan.
+func (d *Device) validateAir() error {
+	switch {
+	case d.Temperature != nil && !within(d.Temperature.Celsius, coldest, hottest):
+		return fmt.Errorf("%w: %q reads a temperature Matter has no number for", ErrDescription, d.ID)
+	case d.Humidity != nil && !within(d.Humidity.Percent, 0, percent):
+		return fmt.Errorf("%w: %q reads a humidity outside 0 to 100", ErrDescription, d.ID)
+	case d.AirQuality != nil:
+		if err := d.AirQuality.validate(d.ID); err != nil {
+			return err
+		}
+	}
+
+	if err := d.validateFilters(); err != nil {
+		return err
+	}
+
+	if d.Heater != nil {
+		return d.Heater.validate(d.ID)
+	}
+
+	return nil
+}
+
+// validateFilters is Validate for an AirPurifier's filters.
+func (d *Device) validateFilters() error {
+	seen := map[FilterKind]bool{}
+
+	for index, filter := range d.Filters {
+		switch {
+		case filter.Kind != HEPA && filter.Kind != Carbon:
+			return fmt.Errorf("%w: %q has a filter %d of no kind", ErrDescription, d.ID, index)
+		case seen[filter.Kind]:
+			return fmt.Errorf("%w: %q has two filters of a kind", ErrDescription, d.ID)
+		case !within(filter.Left, 0, 1):
+			return fmt.Errorf("%w: %q has a filter %d with a life left outside 0 to 1", ErrDescription, d.ID, index)
+		}
+
+		seen[filter.Kind] = true
+	}
+
+	return nil
+}
+
+func (a *AirQuality) validate(device ID) error {
+	switch {
+	case a.Quality < QualityUnknown || a.Quality > QualityExtremelyPoor:
+		return fmt.Errorf("%w: %q has the air quality %d, which is none", ErrDescription, device, a.Quality)
+	case a.PM25 != nil && !within(a.PM25.Micrograms, 0, mostParticulates),
+		a.PM10 != nil && !within(a.PM10.Micrograms, 0, mostParticulates):
+		return fmt.Errorf("%w: %q counts particulates below zero, or beyond counting", ErrDescription, device)
+	default:
+		return nil
+	}
+}
+
+func (h *Heater) validate(device ID) error {
+	switch {
+	case h.SetOn == nil || h.SetTarget == nil:
+		return fmt.Errorf("%w: %q has a Heater that cannot be set", ErrDescription, device)
+	case !(h.Least < h.Most) || !(h.Least >= coldest) || !(h.Most <= hottest): // not a number is outside too
+		return fmt.Errorf("%w: %q has a Heater whose least and most are no range", ErrDescription, device)
+	case !(h.Target >= h.Least && h.Target <= h.Most):
+		return fmt.Errorf("%w: %q heats to %v, outside %v to %v", ErrDescription, device, h.Target, h.Least, h.Most)
+	default:
+		return nil
+	}
+}
+
+// What a reading is held to.
+const (
+	percent          = 100
+	mostParticulates = 1e9
+)
+
+// within says whether a reading that may not be known is one that is
+// not, or one from least to most. Not a number is outside.
+func within(reading *float64, least, most float64) bool {
+	return reading == nil || (*reading >= least && *reading <= most)
 }

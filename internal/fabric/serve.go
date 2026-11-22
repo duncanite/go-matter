@@ -92,6 +92,8 @@ type served struct {
 	// moved is what the node's fan server is to be called with when the
 	// fan's state moved: the server holds none, and reads the device's.
 	moved func()
+	// air is what an air purifier is served with beside its fan.
+	air aired
 }
 
 // Serve watches the source and serves its devices under the node's
@@ -229,6 +231,9 @@ func (s *Serving) handle(ctx context.Context, event matter.Event) {
 		warn(ctx, event.Device, held.level.Set(levelcontroldef.Patch{CurrentLevel: &level}))
 	case matter.FanChanged:
 		warn(ctx, event.Device, held.fanned(change))
+	case matter.TemperatureChanged, matter.HumidityChanged, matter.AirQualityChanged,
+		matter.FilterChanged, matter.HeaterChanged:
+		warn(ctx, event.Device, held.aired(change))
 	case matter.ReachabilityChanged:
 		held.reachable(ctx, !change.Unreachable)
 	case matter.ButtonPressed:
@@ -436,6 +441,7 @@ func (h *served) buildFan(options device.Options) ([]node.Endpoint, error) {
 	}
 
 	declared := append(h.room(), fancontroldef.Declare{Initial: initial, Features: features, StateSource: fanOf{h}})
+	declared = append(declared, h.filters()...)
 
 	var (
 		made *device.Device
@@ -446,7 +452,7 @@ func (h *served) buildFan(options device.Options) ([]node.Endpoint, error) {
 		var purifier *device.AirPurifier
 
 		if purifier, err = device.NewAirPurifier(options, declared...); err == nil {
-			made = purifier.Device
+			made, err = purifier.Device, h.compose(purifier)
 		}
 	} else {
 		var blower *device.Fan
@@ -557,6 +563,11 @@ func (h *served) now() matter.Device {
 	if h.device.FanControl != nil {
 		fan := *h.device.FanControl
 		described.FanControl = &fan
+	}
+
+	if h.device.Heater != nil {
+		heater := *h.device.Heater
+		described.Heater = &heater
 	}
 
 	return described

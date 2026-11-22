@@ -89,8 +89,11 @@ func (h *Home) Remove(id ID) {
 // ErrDescription a change the device cannot have: a level for one with
 // no LevelControl or outside a level's range, a fan for one with no
 // FanControl, in no mode, at a speed outside a level's range, or doing
-// what it cannot, a button it lacks, a device added or removed, which
-// are Put's and Remove's to say. Changes
+// what it cannot, a reading for a device that reads no such thing or
+// outside what Validate holds it to, a filter it lacks or one whose life
+// left is said where it is not or not said where it is, a heater for one
+// that has none or a target outside its range, a button it lacks, a
+// device added or removed, which are Put's and Remove's to say. Changes
 // reported together are taken together, or none of them is.
 func (h *Home) Report(id ID, changes ...Change) error {
 	h.mu.Lock()
@@ -260,6 +263,26 @@ func (h *Home) handOut(held *Device) Device {
 		h.handOutFan(held, out.FanControl)
 	}
 
+	if out.Heater != nil {
+		setOn, setTarget := held.Heater.SetOn, held.Heater.SetTarget
+
+		out.Heater.SetOn = func(ctx context.Context, on bool) error {
+			if err := h.holds(held); err != nil {
+				return err
+			}
+
+			return setOn(ctx, on)
+		}
+
+		out.Heater.SetTarget = func(ctx context.Context, celsius float64) error {
+			if err := h.holds(held); err != nil {
+				return err
+			}
+
+			return setTarget(ctx, celsius)
+		}
+	}
+
 	return out
 }
 
@@ -379,7 +402,61 @@ func (d *Device) clone() Device {
 		out.FanControl = &fan
 	}
 
+	out.cloneAir(d)
+
 	return out
+}
+
+// cloneAir is clone for what an AirPurifier has beside its fan.
+func (d *Device) cloneAir(from *Device) {
+	d.Filters = slices.Clone(from.Filters)
+
+	for index := range d.Filters {
+		d.Filters[index].Left = read(d.Filters[index].Left)
+	}
+
+	if from.Temperature != nil {
+		d.Temperature = &Temperature{Celsius: read(from.Temperature.Celsius)}
+	}
+
+	if from.Humidity != nil {
+		d.Humidity = &Humidity{Percent: read(from.Humidity.Percent)}
+	}
+
+	if from.AirQuality != nil {
+		air := *from.AirQuality
+		air.PM25, air.PM10 = air.PM25.clone(), air.PM10.clone()
+		d.AirQuality = &air
+	}
+
+	if from.Heater != nil {
+		heater := *from.Heater
+		d.Heater = &heater
+	}
+}
+
+func (p *Particulates) clone() *Particulates {
+	if p == nil {
+		return nil
+	}
+
+	return &Particulates{Micrograms: read(p.Micrograms)}
+}
+
+// read is a reading of the caller's own, or nil for none.
+func read(reading *float64) *float64 {
+	if reading == nil {
+		return nil
+	}
+
+	own := *reading
+
+	return &own
+}
+
+// same says whether two readings are one: both none, or both the same.
+func same(a, b *float64) bool {
+	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }
 
 // copied is a flag of the caller's own, or nil for none.
@@ -416,6 +493,8 @@ func (d *Device) takes(change Change) error {
 		}
 	case FanChanged:
 		return d.takesFan(change)
+	case TemperatureChanged, HumidityChanged, AirQualityChanged, FilterChanged, HeaterChanged:
+		return d.takesAir(change)
 	case ReachabilityChanged:
 	case ButtonPressed:
 		return d.hasButton(change.Button)
@@ -452,6 +531,63 @@ func (d *Device) takesFan(change FanChanged) error {
 	}
 }
 
+// takesAir is takes for what an AirPurifier has beside its fan.
+func (d *Device) takesAir(change Change) error {
+	switch change := change.(type) {
+	case TemperatureChanged:
+		if d.Temperature == nil || !within(change.Celsius, coldest, hottest) {
+			return fmt.Errorf("%w: %q was reported a temperature it cannot have", ErrDescription, d.ID)
+		}
+	case HumidityChanged:
+		if d.Humidity == nil || !within(change.Percent, 0, percent) {
+			return fmt.Errorf("%w: %q was reported a humidity it cannot have", ErrDescription, d.ID)
+		}
+	case AirQualityChanged:
+		return d.takesAirQuality(change)
+	case FilterChanged:
+		return d.takesFilter(change)
+	case HeaterChanged:
+		if d.Heater == nil || !(change.Target >= d.Heater.Least && change.Target <= d.Heater.Most) {
+			return fmt.Errorf("%w: %q was reported a heater it cannot have", ErrDescription, d.ID)
+		}
+	}
+
+	return nil
+}
+
+// takesFilter is takes for a filter.
+func (d *Device) takesFilter(change FilterChanged) error {
+	if change.Filter < 0 || change.Filter >= len(d.Filters) {
+		return fmt.Errorf("%w: %q has no filter %d", ErrDescription, d.ID, change.Filter)
+	}
+
+	if (change.Left == nil) != (d.Filters[change.Filter].Left == nil) || !within(change.Left, 0, 1) {
+		return fmt.Errorf(
+			"%w: %q was reported a filter %d with a life left it cannot have", ErrDescription, d.ID, change.Filter,
+		)
+	}
+
+	return nil
+}
+
+// takesAirQuality is takes for the quality of the air.
+func (d *Device) takesAirQuality(change AirQualityChanged) error {
+	air := d.AirQuality
+
+	switch {
+	case air == nil:
+		return fmt.Errorf("%w: %q reads no air quality, and was reported one", ErrDescription, d.ID)
+	case change.Quality < QualityUnknown || change.Quality > QualityExtremelyPoor:
+		return fmt.Errorf("%w: %q was reported the air quality %d, which is none", ErrDescription, d.ID, change.Quality)
+	case (change.PM25 != nil && air.PM25 == nil) || (change.PM10 != nil && air.PM10 == nil):
+		return fmt.Errorf("%w: %q was reported particulates it does not count", ErrDescription, d.ID)
+	case !within(change.PM25, 0, mostParticulates) || !within(change.PM10, 0, mostParticulates):
+		return fmt.Errorf("%w: %q was reported particulates below zero, or beyond counting", ErrDescription, d.ID)
+	default:
+		return nil
+	}
+}
+
 // hasButton is takes for a button.
 func (d *Device) hasButton(button int) error {
 	if button < 0 || button >= len(d.Buttons) {
@@ -479,6 +615,8 @@ func (d *Device) apply(change Change) bool {
 		d.LevelControl.Level = change.Level
 	case FanChanged:
 		return d.FanControl.apply(change)
+	case TemperatureChanged, HumidityChanged, AirQualityChanged, FilterChanged, HeaterChanged:
+		return d.applyAir(change)
 	case ReachabilityChanged:
 		if d.Unreachable == change.Unreachable {
 			return false
@@ -511,4 +649,59 @@ func (f *FanControl) apply(change FanChanged) bool {
 	}
 
 	return true
+}
+
+// applyAir is apply for what an AirPurifier has beside its fan. What is
+// kept is the device's own: never the reading the change came with.
+func (d *Device) applyAir(change Change) bool {
+	switch change := change.(type) {
+	case TemperatureChanged:
+		if same(d.Temperature.Celsius, change.Celsius) {
+			return false
+		}
+
+		d.Temperature.Celsius = read(change.Celsius)
+	case HumidityChanged:
+		if same(d.Humidity.Percent, change.Percent) {
+			return false
+		}
+
+		d.Humidity.Percent = read(change.Percent)
+	case AirQualityChanged:
+		return d.AirQuality.apply(change)
+	case FilterChanged:
+		filter := &d.Filters[change.Filter]
+		if same(filter.Left, change.Left) && filter.Replace == change.Replace {
+			return false
+		}
+
+		filter.Left, filter.Replace = read(change.Left), change.Replace
+	case HeaterChanged:
+		heater := d.Heater
+		if heater.On == change.On && heater.Heating == change.Heating && heater.Target == change.Target {
+			return false
+		}
+
+		heater.On, heater.Heating, heater.Target = change.On, change.Heating, change.Target
+	}
+
+	return true
+}
+
+// apply is Device.apply for the quality of the air.
+func (a *AirQuality) apply(change AirQualityChanged) bool {
+	moved := a.Quality != change.Quality
+
+	a.Quality = change.Quality
+
+	for _, counted := range []struct {
+		held *Particulates
+		now  *float64
+	}{{a.PM25, change.PM25}, {a.PM10, change.PM10}} {
+		if counted.held != nil && !same(counted.held.Micrograms, counted.now) {
+			counted.held.Micrograms, moved = read(counted.now), true
+		}
+	}
+
+	return moved
 }
