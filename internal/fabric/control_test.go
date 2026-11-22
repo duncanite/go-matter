@@ -96,6 +96,34 @@ func soon(t *testing.T, what string, so func() bool) {
 	t.Fatalf("never so: %s", what)
 }
 
+// A bridge is found, by what would pair with it, as a bridge: not as the
+// lamp it happens to serve.
+func TestABridgeIsFoundAsABridge(t *testing.T) {
+	t.Parallel()
+
+	var home matter.Home
+
+	mattertest.Light(&home, "lamp")
+
+	served, _, _ := newTown(t).bridge(t, "Test bridge", &home)
+
+	soon(t, "the bridge is found as a bridge", func() bool {
+		for _, service := range served.Node().MDNSServices() {
+			if service.ServiceType != "_matterc._udp" {
+				continue
+			}
+
+			for _, said := range service.TXT {
+				if said.Key == "DT" {
+					return said.Value == "14"
+				}
+			}
+		}
+
+		return false
+	})
+}
+
 // TestANodeIsHeld: paired, described, invited to another, and given up.
 func TestANodeIsHeld(t *testing.T) {
 	t.Parallel()
