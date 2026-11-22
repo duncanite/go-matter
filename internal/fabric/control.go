@@ -601,12 +601,14 @@ func (c *Controller) follow(local string) {
 	// A node with no id is one being given up: the library says its last
 	// words from inside that call, after it has taken the id away and
 	// before it lets go of the node. Followed, its devices would be put
-	// back under no node's name, where nothing removes them.
-	if NodeID(held) == 0 {
+	// back under no node's name, where nothing removes them. The id is
+	// read once: asked again, it may be gone by then.
+	node := NodeID(held)
+	if node == 0 {
 		return
 	}
 
-	prefix := prefixOf(held)
+	prefix := prefixFor(node)
 	answering := held.ConnectionState() == client.Connected
 	seen := map[matter.ID]bool{}
 
