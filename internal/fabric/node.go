@@ -47,6 +47,11 @@ func NodeConfig(
 		identity.Product = identity.Name
 	}
 
+	// A node opens to be commissioned by itself whenever no fabric holds
+	// it, and is announced as open. A bridge is open when it is invited:
+	// the window is left to it.
+	secret.WindowOnDemand = true
+
 	return node.Config{
 		Network:       node.Network{Listen: listen, MDNS: node.MDNS{Interfaces: interfaces}},
 		Commissioning: secret,

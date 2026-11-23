@@ -44,6 +44,11 @@ func serve(t *testing.T, home matter.Source) *rig {
 	serving := fabric.Serve(device.Node(), home)
 	t.Cleanup(serving.Close)
 
+	// A bridge's node opens to no one by itself.
+	if err = device.Node().OpenOwnWindow(t.Context(), time.Hour); err != nil {
+		t.Fatal(err)
+	}
+
 	pair, err := site.AddController(fabrictest.ControllerOptions{}).
 		Commission(t.Context(), device, fabrictest.CommissionOptions{})
 	if err != nil {

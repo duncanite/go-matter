@@ -50,23 +50,23 @@ type Bridge struct {
 	node    *node.Node
 	serving *Serving
 	owned   bool
+	// announcer is what the node announces itself through when the
+	// bridge was lent a network, and nil when it has its own.
+	announcer *announcer
 
-	// unobserve ends the watch on the node's commissioning window.
-	unobserve func()
-
-	// closing is the closings of windows no one asked for.
-	closing sync.WaitGroup
-
-	mu       sync.Mutex
-	closed   bool
-	inviting bool
+	mu     sync.Mutex
+	closed bool
 }
 
 // OpenBridge makes the node a bridge is, in dir, starts it and serves
 // the source through it. The secret the bridge is commissioned with is
 // drawn the first time and kept in dir.
+//
+// With lent nil the node speaks DNS-SD by itself, on the interfaces
+// named. With one, it announces and finds through it and opens no socket
+// for DNS-SD: which interfaces is then the lender's to say.
 func OpenBridge(
-	ctx context.Context, identity Identity, dir string, interfaces []string, source matter.Source,
+	ctx context.Context, identity Identity, dir string, interfaces []string, source matter.Source, lent Lent,
 ) (*Bridge, error) {
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return nil, fmt.Errorf("making %s: %w", dir, err)
@@ -85,23 +85,31 @@ func OpenBridge(
 	// On Matter's own port, or, when another bridge of this machine has
 	// it, on one the system picks: a node says in its announcement which
 	// port it answers on, so a controller finds it either way.
-	made, err := started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, ""))
+	var through *announcer
+	if lent != nil {
+		through = newAnnouncer(lent)
+	}
+
+	configured := func(listen string) node.Config {
+		cfg := NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, listen)
+		if through != nil {
+			cfg.Advertiser = through
+		}
+
+		return cfg
+	}
+
+	made, err := started(ctx, configured(""), lent)
 	if taken(err) {
-		made, err = started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, anyPort))
+		made, err = started(ctx, configured(anyPort), lent)
 	}
 
 	if err != nil {
 		return nil, err
 	}
 
-	bridge, err := NewBridge(ctx, made, source)
-	if err != nil {
-		_ = made.Stop(context.WithoutCancel(ctx))
-
-		return nil, err
-	}
-
-	bridge.owned = true
+	bridge := NewBridge(made, source) //nolint:contextcheck // serving outlives the opening: Close ends it
+	bridge.owned, bridge.announcer = true, through
 
 	return bridge, nil
 }
@@ -116,10 +124,17 @@ func taken(err error) bool {
 }
 
 // started is a node made and started, or neither.
-func started(ctx context.Context, cfg node.Config) (*node.Node, error) {
+func started(ctx context.Context, cfg node.Config, lent Lent) (*node.Node, error) {
 	made, err := node.New(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("making the bridge's node: %w", err)
+	}
+
+	// A node made is given a resolver of its own, which opens sockets for
+	// DNS-SD when it is asked. It is asked at Start, for the controllers
+	// that were subscribed: what was lent has to be in its place by then.
+	if lent != nil {
+		made.Bridge().AttachOperationalResolver(resolver{lent})
 	}
 
 	if err = made.Start(ctx); err != nil {
@@ -132,27 +147,11 @@ func started(ctx context.Context, cfg node.Config) (*node.Node, error) {
 }
 
 // NewBridge serves the source through a node that is started and stays
-// the caller's. The window a node opens by itself while no fabric holds
-// it is closed: a bridge lets an administrator in when it is asked to.
-func NewBridge(ctx context.Context, started *node.Node, source matter.Source) (*Bridge, error) {
-	bridge := &Bridge{node: started}
-
-	// A node opens its own window whenever no fabric holds it: at its
-	// start, and again when its last fabric is removed. One that opens
-	// while Invite is not opening it is closed. The hook runs inline, in
-	// the call that moved the window, so that an Invite's own opening is
-	// known for what it is.
-	bridge.unobserve = started.Observe(node.Observers{OnWindowTransition: bridge.windowMoved})
-
-	if err := started.CloseWindow(ctx); err != nil {
-		bridge.unobserve()
-
-		return nil, fmt.Errorf("closing the node's own window: %w", err)
-	}
-
-	bridge.serving = Serve(started, source) //nolint:contextcheck // serving outlives the opening: Close ends it
-
-	return bridge, nil
+// the caller's. The node is one that opens no window by itself, as
+// NodeConfig makes it: a bridge lets an administrator in when it is
+// asked to, and is found as open to one only then.
+func NewBridge(started *node.Node, source matter.Source) *Bridge {
+	return &Bridge{node: started, serving: Serve(started, source)}
 }
 
 // Close stops serving, and the node when OpenBridge made it. It returns
@@ -166,11 +165,7 @@ func (b *Bridge) Close() error {
 	}
 
 	b.closed = true
-	b.unobserve()
 	b.serving.Close()
-	b.mu.Unlock()
-	b.closing.Wait()
-	b.mu.Lock()
 
 	if !b.owned {
 		return nil
@@ -204,8 +199,12 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 	}
 
 	if len(held) == 0 {
-		if err = b.asInvitation(func() error { return b.node.OpenOwnWindow(ctx, within) }); err != nil {
+		if err = b.node.OpenOwnWindow(ctx, within); err != nil {
 			return "", "", fmt.Errorf("opening the bridge: %w", err)
+		}
+
+		if err = b.announced(ctx); err != nil {
+			return "", "", err
 		}
 
 		payload, read := b.node.SetupPayload()
@@ -221,8 +220,12 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 		return "", "", fmt.Errorf("drawing a setup code: %w", err)
 	}
 
-	if err = b.asInvitation(func() error { return b.node.OpenBasicWindow(ctx, fresh) }); err != nil {
+	if err = b.node.OpenBasicWindow(ctx, fresh); err != nil {
 		return "", "", fmt.Errorf("opening the bridge: %w", err)
+	}
+
+	if err = b.announced(ctx); err != nil {
+		return "", "", err
 	}
 
 	if qr, manual, err = b.node.PairingCodesFor(fresh); err != nil {
@@ -252,8 +255,8 @@ func (b *Bridge) Fabrics(ctx context.Context) ([]Held, error) {
 }
 
 // Remove ends a fabric's hold. With the last, an invitation still
-// running ends too; and a node with no fabric left opens its own window
-// again by itself, which windowMoved closes.
+// running ends too: held by no one, the bridge is open to no one until
+// it is invited.
 func (b *Bridge) Remove(ctx context.Context, fabric int) error {
 	if err := b.open(); err != nil {
 		return err
@@ -288,6 +291,34 @@ func (b *Bridge) Remove(ctx context.Context, fabric int) error {
 	return nil
 }
 
+// Invited says whether the bridge is open to an administrator now: an
+// invitation stands, or an administrator that holds the bridge opened it
+// to another.
+func (b *Bridge) Invited() bool {
+	return b.node.Window().Open
+}
+
+// announced says whether the window just opened is announced on the
+// network the bridge was lent. A node opens its window whatever becomes
+// of the announcement, and a bridge no controller can find is not
+// invited: the window is closed again, and why is the error.
+func (b *Bridge) announced(ctx context.Context) error {
+	if b.announcer == nil {
+		return nil
+	}
+
+	refused := b.announcer.failed(commissionable)
+	if refused == nil {
+		return nil
+	}
+
+	if err := b.node.CloseWindow(ctx); err != nil {
+		slog.WarnContext(ctx, "the bridge could not close a window it could not announce", "error", err)
+	}
+
+	return fmt.Errorf("opening the bridge: %w", refused)
+}
+
 // open says whether the bridge can still be asked.
 func (b *Bridge) open() error {
 	b.mu.Lock()
@@ -298,44 +329,6 @@ func (b *Bridge) open() error {
 	}
 
 	return nil
-}
-
-// windowMoved closes a window that opened without an invitation. It is
-// called inside the node, so the closing is done after it returns.
-func (b *Bridge) windowMoved(window node.WindowSnapshot) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	// Only the node's own window, which it opens by itself: one an
-	// administrator opened, or Invite beside one, was asked for.
-	if !window.Open || window.Kind != node.WindowOwn || b.inviting || b.closed {
-		return
-	}
-
-	b.closing.Go(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), stopping)
-		defer cancel()
-
-		if err := b.node.CloseWindow(ctx); err != nil {
-			slog.WarnContext(ctx, "the bridge could not close a window no one asked for", "error", err)
-		}
-	})
-}
-
-// asInvitation runs an opening of the window as an invitation's: what it
-// opens is left open.
-func (b *Bridge) asInvitation(opening func() error) error {
-	b.mu.Lock()
-	b.inviting = true
-	b.mu.Unlock()
-
-	defer func() {
-		b.mu.Lock()
-		b.inviting = false
-		b.mu.Unlock()
-	}()
-
-	return opening()
 }
 
 // kept is the secret as it is kept in the directory.
