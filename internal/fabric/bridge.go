@@ -50,6 +50,9 @@ type Bridge struct {
 	node    *node.Node
 	serving *Serving
 	owned   bool
+	// announcer is what the node announces itself through when the
+	// bridge was lent a network, and nil when it has its own.
+	announcer *announcer
 
 	// unobserve ends the watch on the node's commissioning window.
 	unobserve func()
@@ -65,8 +68,12 @@ type Bridge struct {
 // OpenBridge makes the node a bridge is, in dir, starts it and serves
 // the source through it. The secret the bridge is commissioned with is
 // drawn the first time and kept in dir.
+//
+// With lent nil the node speaks DNS-SD by itself, on the interfaces
+// named. With one, it announces and finds through it and opens no socket
+// for DNS-SD: which interfaces is then the lender's to say.
 func OpenBridge(
-	ctx context.Context, identity Identity, dir string, interfaces []string, source matter.Source,
+	ctx context.Context, identity Identity, dir string, interfaces []string, source matter.Source, lent Lent,
 ) (*Bridge, error) {
 	if err := os.MkdirAll(dir, dirPermissions); err != nil {
 		return nil, fmt.Errorf("making %s: %w", dir, err)
@@ -85,9 +92,23 @@ func OpenBridge(
 	// On Matter's own port, or, when another bridge of this machine has
 	// it, on one the system picks: a node says in its announcement which
 	// port it answers on, so a controller finds it either way.
-	made, err := started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, ""))
+	var through *announcer
+	if lent != nil {
+		through = newAnnouncer(lent)
+	}
+
+	configured := func(listen string) node.Config {
+		cfg := NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, listen)
+		if through != nil {
+			cfg.Advertiser = through
+		}
+
+		return cfg
+	}
+
+	made, err := started(ctx, configured(""), lent)
 	if taken(err) {
-		made, err = started(ctx, NodeConfig(identity, secret, filepath.Join(dir, stateFile), interfaces, anyPort))
+		made, err = started(ctx, configured(anyPort), lent)
 	}
 
 	if err != nil {
@@ -101,7 +122,7 @@ func OpenBridge(
 		return nil, err
 	}
 
-	bridge.owned = true
+	bridge.owned, bridge.announcer = true, through
 
 	return bridge, nil
 }
@@ -116,10 +137,17 @@ func taken(err error) bool {
 }
 
 // started is a node made and started, or neither.
-func started(ctx context.Context, cfg node.Config) (*node.Node, error) {
+func started(ctx context.Context, cfg node.Config, lent Lent) (*node.Node, error) {
 	made, err := node.New(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("making the bridge's node: %w", err)
+	}
+
+	// A node made is given a resolver of its own, which opens sockets for
+	// DNS-SD when it is asked. It is asked at Start, for the controllers
+	// that were subscribed: what was lent has to be in its place by then.
+	if lent != nil {
+		made.Bridge().AttachOperationalResolver(resolver{lent})
 	}
 
 	if err = made.Start(ctx); err != nil {
@@ -208,6 +236,10 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 			return "", "", fmt.Errorf("opening the bridge: %w", err)
 		}
 
+		if err = b.announced(ctx); err != nil {
+			return "", "", err
+		}
+
 		payload, read := b.node.SetupPayload()
 		if read != nil {
 			return "", "", fmt.Errorf("reading the bridge's setup code: %w", read)
@@ -223,6 +255,10 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 
 	if err = b.asInvitation(func() error { return b.node.OpenBasicWindow(ctx, fresh) }); err != nil {
 		return "", "", fmt.Errorf("opening the bridge: %w", err)
+	}
+
+	if err = b.announced(ctx); err != nil {
+		return "", "", err
 	}
 
 	if qr, manual, err = b.node.PairingCodesFor(fresh); err != nil {
@@ -286,6 +322,34 @@ func (b *Bridge) Remove(ctx context.Context, fabric int) error {
 	}
 
 	return nil
+}
+
+// Invited says whether the bridge is open to an administrator now: an
+// invitation stands, or an administrator that holds the bridge opened it
+// to another.
+func (b *Bridge) Invited() bool {
+	return b.node.Window().Open
+}
+
+// announced says whether the window just opened is announced on the
+// network the bridge was lent. A node opens its window whatever becomes
+// of the announcement, and a bridge no controller can find is not
+// invited: the window is closed again, and why is the error.
+func (b *Bridge) announced(ctx context.Context) error {
+	if b.announcer == nil {
+		return nil
+	}
+
+	refused := b.announcer.failed(commissionable)
+	if refused == nil {
+		return nil
+	}
+
+	if err := b.node.CloseWindow(ctx); err != nil {
+		slog.WarnContext(ctx, "the bridge could not close a window it could not announce", "error", err)
+	}
+
+	return fmt.Errorf("opening the bridge: %w", refused)
 }
 
 // open says whether the bridge can still be asked.

@@ -119,6 +119,22 @@ All of it is built: package `matter`, the bridge, the controller, and `mattertes
 - **State is kept in a directory.** It is the least that can be asked and hides the most.
   A test gives a temporary one.
 - **Logging is `log/slog`'s default.** The host says where it goes, once, for everything.
+- **A bridge can be lent the host's part in DNS-SD.** Multicast DNS has one port, and two
+  parts in it on one interface do not hear each other's answers. A program that looks for
+  devices and is also found as a bridge has one part for both: `bridge.Config.Network` is
+  an interface of this module's own, in the standard library's types, that whatever has
+  that part satisfies: announce a service, withdraw one, find an instance. With it the
+  bridge opens no socket for DNS-SD, and where it is found is its lender's to say.
+  Without it the bridge has a part of its own, as before. The bridge still says what is
+  Matter's to say: the names, the subtypes, the text. The lender says what is the host's:
+  its name, its addresses, and when a record is said. A host has one name, so it is not
+  the bridge's to give with each service; what Matter asks is that it be of a form, the
+  host's hardware address in capitals, and `bridge.HostName` is that rule, for whoever
+  has the host's part to open it under such a name before any bridge is. A host with no
+  hardware address is given no name here: the library makes one up from the system's
+  host name, which is the library's own doing and not the rule.
+  A service announced again as it stands is not said again, which DNS-SD does not ask
+  for; a node asks for it whenever a controller goes.
 - **`mattertest.Across` is the module's law.** A source, served by a bridge and
   commissioned by a controller, is the same source. Every test of this module is a case
   of it, and so is the test of any adapter. It is also what a second implementation of
@@ -202,7 +218,13 @@ falls short of the API, the API stays as it is and the shortfall is here:
 - **A device's model, serial and firmware do not cross.** Its name, vendor and room do.
   The library fills a bridged device's product name and serial number from one value of
   its own, and offers no place for a software version.
-- **`Interface` restricts where the bridge announces itself, not where it answers.**
+- **`Interface` restricts where the bridge announces itself, not where it answers.** So
+  does a lent network: the library answers Matter on every address, and offers no way to
+  bind its port to an interface.
+- **A lent network is not asked to find a controller in any test.** The library asks for
+  one only to take up again, after a restart, the subscriptions a controller had; what
+  answers then is the lender's `Resolve`, put in the place of the library's own before
+  the node starts.
 - **`Move` and `Stop` are answered as unsupported for a device without them.** The
   bridge does not step such a device by `Set`. Matter's Step commands, and on for a
   time, are answered as unsupported for every device.
