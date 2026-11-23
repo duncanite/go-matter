@@ -838,7 +838,7 @@ func (c *Controller) fan(held *client.Node, endpoint *client.Endpoint, device ma
 		fan.Oscillating = &oscillating
 		fan.SetOscillating = c.setFanFlag(
 			held,
-			number,
+			endpoint,
 			fancontroldef.AttrRockSetting,
 			uint8(fancontroldef.RockRockLeftRight),
 		)
@@ -847,7 +847,7 @@ func (c *Controller) fan(held *client.Node, endpoint *client.Endpoint, device ma
 	if said.WindSupport&fancontroldef.WindSleepWind != 0 {
 		sleep := said.WindSetting&fancontroldef.WindSleepWind != 0
 		fan.Sleep = &sleep
-		fan.SetSleep = c.setFanFlag(held, number, fancontroldef.AttrWindSetting, uint8(fancontroldef.WindSleepWind))
+		fan.SetSleep = c.setFanFlag(held, endpoint, fancontroldef.AttrWindSetting, uint8(fancontroldef.WindSleepWind))
 	}
 
 	return fan
@@ -891,18 +891,26 @@ func (c *Controller) setFanSpeed(
 	}
 }
 
-// setFanFlag writes one bit of a fan's rocking or of its wind: the one
-// this vocabulary has a word for.
+// setFanFlag writes one bit of a fan's rocking or of its wind, the one
+// this vocabulary has a word for, into the setting as the fan last said
+// it: a fan may have other bits there, which a write of the one alone
+// would clear.
 func (c *Controller) setFanFlag(
-	held *client.Node, endpoint uint16, attribute uint32, bit uint8,
+	held *client.Node, endpoint *client.Endpoint, attribute uint32, bit uint8,
 ) func(context.Context, bool) error {
 	return func(ctx context.Context, on bool) error {
-		wanted := uint8(0)
-		if on {
-			wanted = bit
+		said, _ := fancontroldef.StateFrom(endpoint.Cluster(fancontroldef.ClusterID))
+
+		wanted := uint8(said.WindSetting)
+		if attribute == fancontroldef.AttrRockSetting {
+			wanted = uint8(said.RockSetting)
 		}
 
-		return c.writeFan(ctx, held, endpoint, attribute, spec.Uint(wanted))
+		if wanted &^= bit; on {
+			wanted |= bit
+		}
+
+		return c.writeFan(ctx, held, endpoint.Number(), attribute, spec.Uint(wanted))
 	}
 }
 
