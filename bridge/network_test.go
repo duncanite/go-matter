@@ -110,17 +110,19 @@ func opened(t *testing.T, network bridge.Network, dir string) *bridge.Bridge {
 }
 
 // TestABridgeLentANetwork: a bridge that is lent a network says through
-// it what it is found as: nothing while it is closed to everyone, itself
-// as Matter has a node that can be commissioned announced once it is
-// invited, and nothing again once it is closed.
+// it what it is found as: nothing at all until it is invited, then
+// itself, once, as Matter has a node that can be commissioned announced,
+// and nothing again once it is closed.
 //
 //nolint:paralleltest // it may take Matter's port, which a machine has one of
 func TestABridgeLentANetwork(t *testing.T) {
 	network := &lender{}
 	served := opened(t, network, filepath.Join(t.TempDir(), "bridge"))
 
-	if standing := network.standing(); len(standing) != 0 {
-		t.Fatalf("a bridge no one was invited to stands announced as %+v", standing)
+	// Not announced and then withdrawn: a bridge that says it is open,
+	// takes it back and says it again is found twice by what was looking.
+	if asked := network.all(); len(asked) != 0 {
+		t.Fatalf("a bridge no one was invited to asked the network %+v", asked)
 	}
 
 	if _, err := served.Invite(t.Context(), time.Minute); err != nil {
@@ -128,8 +130,8 @@ func TestABridgeLentANetwork(t *testing.T) {
 	}
 
 	standing := network.standing()
-	if len(standing) != 1 {
-		t.Fatalf("invited, the bridge stands announced as %+v", standing)
+	if asked := network.all(); len(asked) != 1 || len(standing) != 1 {
+		t.Fatalf("invited, the bridge asked the network %+v", asked)
 	}
 
 	found := standing[0]

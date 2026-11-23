@@ -217,12 +217,9 @@ func TestABridgeIsHeld(t *testing.T) {
 	site := fabrictest.NewSite(t, fabrictest.Options{Clock: clock.System{}})
 	device := site.AddNode(fabric.NodeConfig(fabric.Identity{Name: "Test bridge"}, secret, "", nil, ""))
 
-	bridge, err := fabric.NewBridge(ctx, device.Node(), &home)
-	if err != nil {
-		t.Fatal(err)
-	}
+	bridge := fabric.NewBridge(device.Node(), &home)
 
-	// Open to no one: the node's own window was closed.
+	// Open to no one: its node opens no window by itself.
 	if device.Node().Window().Open {
 		t.Fatal("a bridge is commissionable before it is asked to be")
 	}
@@ -329,8 +326,7 @@ func TestABridgeIsHeld(t *testing.T) {
 		t.Fatalf("after its one fabric was removed: %+v, %v", held, err)
 	}
 
-	// The node opens its own window again once no fabric holds it; the
-	// bridge closes what it was not asked for.
+	// Held by no one again, it is open to no one, and stays so.
 	for deadline := time.Now().Add(5 * time.Second); device.Node().Window().Open; time.Sleep(10 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatal("a bridge let go is commissionable without being asked")

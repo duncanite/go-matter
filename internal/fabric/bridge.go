@@ -54,15 +54,8 @@ type Bridge struct {
 	// bridge was lent a network, and nil when it has its own.
 	announcer *announcer
 
-	// unobserve ends the watch on the node's commissioning window.
-	unobserve func()
-
-	// closing is the closings of windows no one asked for.
-	closing sync.WaitGroup
-
-	mu       sync.Mutex
-	closed   bool
-	inviting bool
+	mu     sync.Mutex
+	closed bool
 }
 
 // OpenBridge makes the node a bridge is, in dir, starts it and serves
@@ -115,13 +108,7 @@ func OpenBridge(
 		return nil, err
 	}
 
-	bridge, err := NewBridge(ctx, made, source)
-	if err != nil {
-		_ = made.Stop(context.WithoutCancel(ctx))
-
-		return nil, err
-	}
-
+	bridge := NewBridge(made, source) //nolint:contextcheck // serving outlives the opening: Close ends it
 	bridge.owned, bridge.announcer = true, through
 
 	return bridge, nil
@@ -160,27 +147,11 @@ func started(ctx context.Context, cfg node.Config, lent Lent) (*node.Node, error
 }
 
 // NewBridge serves the source through a node that is started and stays
-// the caller's. The window a node opens by itself while no fabric holds
-// it is closed: a bridge lets an administrator in when it is asked to.
-func NewBridge(ctx context.Context, started *node.Node, source matter.Source) (*Bridge, error) {
-	bridge := &Bridge{node: started}
-
-	// A node opens its own window whenever no fabric holds it: at its
-	// start, and again when its last fabric is removed. One that opens
-	// while Invite is not opening it is closed. The hook runs inline, in
-	// the call that moved the window, so that an Invite's own opening is
-	// known for what it is.
-	bridge.unobserve = started.Observe(node.Observers{OnWindowTransition: bridge.windowMoved})
-
-	if err := started.CloseWindow(ctx); err != nil {
-		bridge.unobserve()
-
-		return nil, fmt.Errorf("closing the node's own window: %w", err)
-	}
-
-	bridge.serving = Serve(started, source) //nolint:contextcheck // serving outlives the opening: Close ends it
-
-	return bridge, nil
+// the caller's. The node is one that opens no window by itself, as
+// NodeConfig makes it: a bridge lets an administrator in when it is
+// asked to, and is found as open to one only then.
+func NewBridge(started *node.Node, source matter.Source) *Bridge {
+	return &Bridge{node: started, serving: Serve(started, source)}
 }
 
 // Close stops serving, and the node when OpenBridge made it. It returns
@@ -194,11 +165,7 @@ func (b *Bridge) Close() error {
 	}
 
 	b.closed = true
-	b.unobserve()
 	b.serving.Close()
-	b.mu.Unlock()
-	b.closing.Wait()
-	b.mu.Lock()
 
 	if !b.owned {
 		return nil
@@ -232,7 +199,7 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 	}
 
 	if len(held) == 0 {
-		if err = b.asInvitation(func() error { return b.node.OpenOwnWindow(ctx, within) }); err != nil {
+		if err = b.node.OpenOwnWindow(ctx, within); err != nil {
 			return "", "", fmt.Errorf("opening the bridge: %w", err)
 		}
 
@@ -253,7 +220,7 @@ func (b *Bridge) Invite(ctx context.Context, within time.Duration) (manual, qr s
 		return "", "", fmt.Errorf("drawing a setup code: %w", err)
 	}
 
-	if err = b.asInvitation(func() error { return b.node.OpenBasicWindow(ctx, fresh) }); err != nil {
+	if err = b.node.OpenBasicWindow(ctx, fresh); err != nil {
 		return "", "", fmt.Errorf("opening the bridge: %w", err)
 	}
 
@@ -288,8 +255,8 @@ func (b *Bridge) Fabrics(ctx context.Context) ([]Held, error) {
 }
 
 // Remove ends a fabric's hold. With the last, an invitation still
-// running ends too; and a node with no fabric left opens its own window
-// again by itself, which windowMoved closes.
+// running ends too: held by no one, the bridge is open to no one until
+// it is invited.
 func (b *Bridge) Remove(ctx context.Context, fabric int) error {
 	if err := b.open(); err != nil {
 		return err
@@ -362,44 +329,6 @@ func (b *Bridge) open() error {
 	}
 
 	return nil
-}
-
-// windowMoved closes a window that opened without an invitation. It is
-// called inside the node, so the closing is done after it returns.
-func (b *Bridge) windowMoved(window node.WindowSnapshot) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	// Only the node's own window, which it opens by itself: one an
-	// administrator opened, or Invite beside one, was asked for.
-	if !window.Open || window.Kind != node.WindowOwn || b.inviting || b.closed {
-		return
-	}
-
-	b.closing.Go(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), stopping)
-		defer cancel()
-
-		if err := b.node.CloseWindow(ctx); err != nil {
-			slog.WarnContext(ctx, "the bridge could not close a window no one asked for", "error", err)
-		}
-	})
-}
-
-// asInvitation runs an opening of the window as an invitation's: what it
-// opens is left open.
-func (b *Bridge) asInvitation(opening func() error) error {
-	b.mu.Lock()
-	b.inviting = true
-	b.mu.Unlock()
-
-	defer func() {
-		b.mu.Lock()
-		b.inviting = false
-		b.mu.Unlock()
-	}()
-
-	return opening()
 }
 
 // kept is the secret as it is kept in the directory.

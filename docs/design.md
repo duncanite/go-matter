@@ -231,8 +231,6 @@ falls short of the API, the API stays as it is and the shortfall is here:
 - **A level sent to a device that is off is always kept**, for when it is switched on.
   Matter keeps it only when the command or the device says to; the bridge does not look.
 - **A name is cut at 32 bytes and a room at 16**, which is what Matter gives each.
-- **A node opens to commissioning by itself** when no fabric holds it. The bridge closes
-  what `Invite` did not open, a moment after it opens.
 - **A remote crosses as one remote for each of its buttons**, each named by the remote
   and the button. Matter has a switch for a button and nothing here groups them again.
 - **Every dimmable device has `Move` and `Stop` on the far side.** Matter requires the
