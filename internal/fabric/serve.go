@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	fancontroldef "github.com/SukramJ/go-fabric/cluster/spec/fancontrol"
 	fixedlabeldef "github.com/SukramJ/go-fabric/cluster/spec/fixedlabel"
 	levelcontroldef "github.com/SukramJ/go-fabric/cluster/spec/levelcontrol"
 	onoffdef "github.com/SukramJ/go-fabric/cluster/spec/onoff"
@@ -39,6 +40,8 @@ const (
 	// Matter's level, for a light: 1 to 254.
 	levelLeast uint8 = 1
 	levelFull  uint8 = 254
+	// A fan's speed, in Matter's percent.
+	percentFull = 100
 	// A transition time is in tenths of a second.
 	tenth = 100 * time.Millisecond
 	// What a label and a name may be long, in bytes.
@@ -86,6 +89,9 @@ type served struct {
 	mu      sync.Mutex
 	device  matter.Device
 	pending matter.Level
+	// moved is what the node's fan server is to be called with when the
+	// fan's state moved: the server holds none, and reads the device's.
+	moved func()
 }
 
 // Serve watches the source and serves its devices under the node's
@@ -221,6 +227,8 @@ func (s *Serving) handle(ctx context.Context, event matter.Event) {
 
 		level := toMatter(change.Level)
 		warn(ctx, event.Device, held.level.Set(levelcontroldef.Patch{CurrentLevel: &level}))
+	case matter.FanChanged:
+		warn(ctx, event.Device, held.fanned(change))
 	case matter.ReachabilityChanged:
 		held.reachable(ctx, !change.Unreachable)
 	case matter.ButtonPressed:
@@ -306,6 +314,10 @@ func (h *served) build() ([]node.Endpoint, error) {
 		Vendor:    cut(described.Vendor, nameBytes),
 	}
 
+	if described.Kind == matter.Fan || described.Kind == matter.AirPurifier {
+		return h.buildFan(options)
+	}
+
 	declared := []device.Declaration{
 		onoffdef.Declare{
 			Initial:      onoffdef.Patch{OnOff: &described.OnOff.On},
@@ -332,10 +344,7 @@ func (h *served) build() ([]node.Endpoint, error) {
 		},
 	}
 
-	if described.Room != "" {
-		labels := []fixedlabeldef.LabelStruct{{Label: "room", Value: cut(described.Room, labelBytes)}}
-		declared = append(declared, fixedlabeldef.Declare{Initial: fixedlabeldef.Patch{LabelList: &labels}})
-	}
+	declared = append(declared, h.room()...)
 
 	if described.LevelControl != nil {
 		declared = append(declared, h.declareLevel())
@@ -370,6 +379,80 @@ func (h *served) build() ([]node.Endpoint, error) {
 
 		if plug, err = device.NewOnOffPlugInUnit(options, declared...); err == nil {
 			made, h.onOff = plug.Device, plug.OnOff()
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("making its endpoint: %w", err)
+	}
+
+	h.keys = []device.SourceKey{options.StableKey}
+	h.devices = []*device.Device{made}
+
+	return []node.Endpoint{made}, nil
+}
+
+// room is the declaration of the room a device says it is in, when it
+// says one.
+func (h *served) room() []device.Declaration {
+	if h.device.Room == "" {
+		return nil
+	}
+
+	labels := []fixedlabeldef.LabelStruct{{Label: "room", Value: cut(h.device.Room, labelBytes)}}
+
+	return []device.Declaration{fixedlabeldef.Declare{Initial: fixedlabeldef.Patch{LabelList: &labels}}}
+}
+
+// buildFan makes the endpoint of a fan or of an air purifier. Its modes
+// are Matter's off, high and auto: on is high, since which of low,
+// medium and high a speed is would be this module's to make up, and the
+// speed itself is said beside it.
+func (h *served) buildFan(options device.Options) ([]node.Endpoint, error) {
+	fan := h.device.FanControl
+	features := fancontroldef.FeatureAuto
+	sequence := fancontroldef.FanModeSequenceOffHighAuto
+	initial := fancontroldef.Patch{FanModeSequence: &sequence}
+
+	if fan.Steps > 0 {
+		steps := uint8(fan.Steps) // #nosec G115 -- Validate held it to a hundred
+
+		features |= fancontroldef.FeatureMultiSpeed
+		initial.SpeedMax = &steps
+	}
+
+	if fan.Oscillating != nil {
+		rocks := fancontroldef.RockRockLeftRight
+
+		features |= fancontroldef.FeatureRocking
+		initial.RockSupport = &rocks
+	}
+
+	if fan.Sleep != nil {
+		winds := fancontroldef.WindSleepWind
+
+		features |= fancontroldef.FeatureWind
+		initial.WindSupport = &winds
+	}
+
+	declared := append(h.room(), fancontroldef.Declare{Initial: initial, Features: features, StateSource: fanOf{h}})
+
+	var (
+		made *device.Device
+		err  error
+	)
+
+	if h.device.Kind == matter.AirPurifier {
+		var purifier *device.AirPurifier
+
+		if purifier, err = device.NewAirPurifier(options, declared...); err == nil {
+			made = purifier.Device
+		}
+	} else {
+		var blower *device.Fan
+
+		if blower, err = device.NewFan(options, declared...); err == nil {
+			made = blower.Device
 		}
 	}
 
@@ -471,7 +554,134 @@ func (h *served) now() matter.Device {
 		described.LevelControl = &level
 	}
 
+	if h.device.FanControl != nil {
+		fan := *h.device.FanControl
+		described.FanControl = &fan
+	}
+
 	return described
+}
+
+// fanned takes a fan's state as the source says it, and has the node's
+// server say it moved.
+func (h *served) fanned(change matter.FanChanged) error {
+	h.mu.Lock()
+
+	fan := h.device.FanControl
+	if fan == nil || change.Mode < matter.FanOff || change.Mode > matter.FanAuto ||
+		!(change.Speed > 0 && change.Speed <= 1) ||
+		(change.Oscillating && fan.Oscillating == nil) || (change.Sleep && fan.Sleep == nil) {
+		h.mu.Unlock()
+
+		return errNoSuchState
+	}
+
+	fan.Mode, fan.Speed, fan.Running = change.Mode, change.Speed, change.Running
+
+	// New flags, never the ones in place written into: a copy of the
+	// device a command took shares them.
+	if fan.Oscillating != nil {
+		fan.Oscillating = &change.Oscillating
+	}
+
+	if fan.Sleep != nil {
+		fan.Sleep = &change.Sleep
+	}
+
+	moved := h.moved
+	h.mu.Unlock()
+
+	if moved != nil {
+		moved()
+	}
+
+	return nil
+}
+
+// fanOf is a device's fan as the node's server asks for it: the server
+// holds no state of its own, reads the device's at every read, and hands
+// over what a controller wrote once Matter's own rules have made of it a
+// mode or a speed.
+type fanOf struct{ of *served }
+
+// FanState is fancontroldef.StateSource's. A fan that is off is at no
+// speed, and one left to itself at none that is said: Matter's rules.
+func (f fanOf) FanState() fancontroldef.State {
+	fan := f.of.now().FanControl
+	percent, step, none := percentOf(fan.Speed), stepOf(fan.Speed, fan.Steps), uint8(0)
+
+	state := fancontroldef.State{FanMode: fancontroldef.FanModeOff, PercentSetting: &none, SpeedSetting: &none}
+
+	switch fan.Mode {
+	case matter.FanOn:
+		state.FanMode, state.PercentSetting, state.SpeedSetting = fancontroldef.FanModeHigh, &percent, &step
+	case matter.FanAuto:
+		state.FanMode, state.PercentSetting, state.SpeedSetting = fancontroldef.FanModeAuto, nil, nil
+	case matter.FanOff:
+	}
+
+	if fan.Running {
+		state.PercentCurrent, state.SpeedCurrent = percent, step
+	}
+
+	if fan.Oscillating != nil && *fan.Oscillating {
+		state.RockSetting = fancontroldef.RockRockLeftRight
+	}
+
+	if fan.Sleep != nil && *fan.Sleep {
+		state.WindSetting = fancontroldef.WindSleepWind
+	}
+
+	return state
+}
+
+// ApplyFanSettings is fancontroldef.StateSource's: one thing a
+// controller wrote. A mode is the device's mode, any of low, medium and
+// high its on; a speed is the device's speed, by its steps when it has
+// them and they were written, which is exact, and by the percent
+// otherwise.
+func (f fanOf) ApplyFanSettings(ctx context.Context, wrote fancontroldef.Patch) error {
+	fan := f.of.now().FanControl
+
+	switch {
+	case wrote.FanMode != nil:
+		mode := matter.FanOn
+
+		switch *wrote.FanMode {
+		case fancontroldef.FanModeOff:
+			mode = matter.FanOff
+		case fancontroldef.FanModeAuto:
+			mode = matter.FanAuto
+		case fancontroldef.FanModeLow, fancontroldef.FanModeMedium, fancontroldef.FanModeHigh,
+			fancontroldef.FanModeOn, fancontroldef.FanModeSmart:
+		}
+
+		return crossing(fan.SetMode(ctx, mode))
+	case wrote.SpeedSetting != nil && fan.Steps > 0:
+		return crossing(fan.SetSpeed(ctx, matter.Level(*wrote.SpeedSetting)/matter.Level(fan.Steps)))
+	case wrote.PercentSetting != nil:
+		return crossing(fan.SetSpeed(ctx, matter.Level(*wrote.PercentSetting)/percentFull))
+	case wrote.RockSetting != nil && fan.SetOscillating != nil:
+		return crossing(fan.SetOscillating(ctx, *wrote.RockSetting&fancontroldef.RockRockLeftRight != 0))
+	case wrote.WindSetting != nil && fan.SetSleep != nil:
+		return crossing(fan.SetSleep(ctx, *wrote.WindSetting&fancontroldef.WindSleepWind != 0))
+	default:
+		return contract.StatusError{Status: statusUnsupported, Message: "the fan has no such setting"}
+	}
+}
+
+// OnMatterValueChanged is how the node's server asks to be told that
+// the fan's state moved.
+func (f fanOf) OnMatterValueChanged(moved func()) (unsubscribe func()) {
+	f.of.mu.Lock()
+	f.of.moved = moved
+	f.of.mu.Unlock()
+
+	return func() {
+		f.of.mu.Lock()
+		f.of.moved = nil
+		f.of.mu.Unlock()
+	}
 }
 
 // switchTo is On and Off. Switched on, a device that was sent a level
@@ -597,6 +807,22 @@ func toMatter(level matter.Level) uint8 {
 	scaled := math.Round(float64(level) * float64(levelFull))
 
 	return uint8(min(max(scaled, float64(levelLeast)), float64(levelFull)))
+}
+
+// percentOf is a fan's speed in Matter's percent, never zero: zero is
+// off.
+func percentOf(speed matter.Level) uint8 {
+	return uint8(min(max(math.Round(float64(speed)*percentFull), 1), percentFull))
+}
+
+// stepOf is a fan's speed as the one of its steps nearest to it, never
+// zero; and zero for a fan with no steps.
+func stepOf(speed matter.Level, steps int) uint8 {
+	if steps <= 0 {
+		return 0
+	}
+
+	return uint8(min(max(math.Round(float64(speed)*float64(steps)), 1), float64(steps)))
 }
 
 // fromMatter is Matter's level as a fraction of full, never zero.
