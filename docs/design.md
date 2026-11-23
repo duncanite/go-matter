@@ -57,9 +57,10 @@ All of it is built: package `matter`, the bridge, the controller, and `mattertes
 6. **The zero value is the safe one.** A zero `Device` is reachable, a zero `Trust` is
    the strictest, a zero `Home` is empty and ready, a nil command is one the device does
    not have.
-7. **A word exists when a device needs it.** Five kinds of device and three
+7. **A word exists when a device needs it.** Five kinds of device and eight
    capabilities, because the devices served so far are switches, dimmers, plugs, button
-   remotes, fans and air purifiers. Matter has many more device types; each is added the
+   remotes, fans and air purifiers, and an air purifier reads the air, has filters and
+   may heat. Matter has many more device types; each is added the
    day one is served.
 8. **No numbers, and nothing of the implementation.** No endpoint, cluster, attribute or
    command identifier appears; a level is a fraction and a time is a `time.Duration`. No
@@ -87,6 +88,19 @@ All of it is built: package `matter`, the bridge, the controller, and `mattertes
   keeps its level. What a fan does is told whole, in one change: its mode, its speed and
   whether it turns move together, and a watcher told them apart would see states the fan
   was never in.
+- **A reading is a number with a unit, or it is not known.** A temperature in Celsius, a
+  humidity in percent, particles by weight in a cubic metre of air: each is nil while the
+  device reads nothing, a sensor that is off or starting, and that is told like any other
+  change. A device with no such sensor has no such capability, which is not the same
+  thing and does not change while it runs. A maker's own index, with no unit and no
+  scale anyone wrote down, is no reading and has no word here: what the device makes of
+  the air overall is said on Matter's scale, from good to extremely poor, and not known
+  when the device cannot say.
+- **A filter says how much of it is left, or does not, for good.** One that counts its
+  hours and one that only says when it is due are both filters; which it is does not
+  change while the device runs.
+- **A heater is on or off and has a target.** Whether it heats now is beside that: set to
+  heat, it stops when the room is warm enough. Its state is told whole, as a fan's is.
 - **A command returns when it is taken, not when it is done.** What the device then does
   arrives as an event like any other, so state is never guessed at.
 - **An unreachable device is answered for by its source.** Its commands return
@@ -132,6 +146,10 @@ text for this document.
 | `FanControl.Speed` | PercentSetting, and SpeedSetting of SpeedMax for a fan with `Steps`, which is what is written and read when there are steps |
 | `FanControl.Running` | PercentCurrent and SpeedCurrent, zero for a fan that does not turn |
 | `FanControl.Oscillating`, `Sleep` | RockSetting's left and right, WindSetting's sleep wind |
+| `Temperature`, `Humidity` | a Temperature Sensor and a Humidity Sensor, each a part of the Air Purifier's endpoint; null while the reading is not known |
+| `AirQuality` | an Air Quality Sensor as a part: the Air Quality cluster with every level of its scale, and the PM2.5 and PM10 concentration clusters for what the device counts, numeric, in micrograms per cubic metre of air |
+| `Filters` | the HEPA and the Activated Carbon Filter Monitoring clusters on the Air Purifier's own endpoint: Condition, in percent, for a filter that says how much is left, and ChangeIndication, ok or critical |
+| `Heater` | a Thermostat as a part, that only heats: SystemMode off or heat, OccupiedHeatingSetpoint within its limits, the relay state for heating now, and LocalTemperature the device's own `Temperature` |
 | `Level`, above 0 to 1 | CurrentLevel, 1 to 254 |
 | a `time.Duration` | TransitionTime, in tenths of a second |
 | `ButtonPressed`, `ButtonReleased` | the Switch cluster's InitialPress and ShortRelease; LongPress and MultiPress derived by the bridge |
@@ -147,6 +165,13 @@ Matter says no speed of a fan that is off, and none of one left to itself: Perce
 is zero for the one and null for the other. A controller keeps the speed the fan last
 said, and takes it for full when it said none. A controller's write of what a fan
 already is at reaches no one: Matter's fan compares before it asks.
+
+Only an air purifier has readings, filters and a heater: Matter names the sensors and the
+thermostat as what an Air Purifier is composed with, and names none for a Fan. They are
+parts of the purifier's endpoint, not bridged devices of their own, so the device is
+reachable or not as one. A controller's write to the thermostat is asked of the heater
+before it is kept, and what the heater refuses is not kept; a setpoint raised or lowered
+is the target moved by tenths of a degree.
 
 | Error | Status sent, and read back as the same error |
 | --- | --- |

@@ -642,10 +642,10 @@ func (c *Controller) keep(described matter.Device) {
 	held, known := c.home.Device(described.ID)
 
 	// A remote is one button on this side, always: what can differ is
-	// what is said of a device, whether it has a level, and what its fan
-	// can do.
+	// what is said of a device, whether it has a level, what its fan can
+	// do, and what it has beside its fan.
 	if !known || held.Info != described.Info || (held.LevelControl == nil) != (described.LevelControl == nil) ||
-		fanShape(&held) != fanShape(&described) {
+		fanShape(&held) != fanShape(&described) || airShape(&held) != airShape(&described) {
 		if err := c.home.Put(described); err != nil {
 			slog.Warn("a device of a node is left out", "error", err)
 		}
@@ -669,6 +669,8 @@ func (c *Controller) keep(described matter.Device) {
 			Oscillating: fan.Oscillating != nil && *fan.Oscillating, Sleep: fan.Sleep != nil && *fan.Sleep,
 		})
 	}
+
+	changes = append(changes, airChanges(&described)...)
 
 	if err := c.home.Report(described.ID, changes...); err != nil {
 		slog.Warn("a device of a node could not be followed", "error", err)
@@ -715,6 +717,10 @@ func (c *Controller) describe(held *client.Node, endpoint *client.Endpoint, pref
 
 	if kind == matter.Fan || kind == matter.AirPurifier {
 		described.FanControl = c.fan(held, endpoint, described.ID)
+
+		if kind == matter.AirPurifier {
+			c.air(held, endpoint, &described)
+		}
 
 		return described, true
 	}
@@ -967,10 +973,17 @@ func (c *Controller) invoke(
 	return answered(err)
 }
 
-// writeFan writes one attribute of a fan and gives its answer as the
-// vocabulary's error.
+// writeFan writes one attribute of a fan.
 func (c *Controller) writeFan(
 	ctx context.Context, held *client.Node, endpoint uint16, attribute uint32, value spec.Encodable,
+) error {
+	return c.write(ctx, held, endpoint, fancontroldef.ClusterID, attribute, value)
+}
+
+// write writes one attribute and gives its answer as the vocabulary's
+// error.
+func (c *Controller) write(
+	ctx context.Context, held *client.Node, endpoint uint16, cluster, attribute uint32, value spec.Encodable,
 ) error {
 	_, leave, err := c.enter()
 	if err != nil {
@@ -981,7 +994,7 @@ func (c *Controller) writeFan(
 
 	statuses, err := held.Write(ctx, []client.WriteRequest{{
 		Path: im.ConcreteAttributePath{
-			Endpoint: endpoint, Cluster: fancontroldef.ClusterID, Attribute: attribute,
+			Endpoint: endpoint, Cluster: cluster, Attribute: attribute,
 			HasEndpoint: true, HasCluster: true, HasAttribute: true,
 		},
 		Value: value,

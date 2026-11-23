@@ -51,6 +51,13 @@ const lowest matter.Level = 0.01
 // fanSteps is how many speeds a Fan has.
 const fanSteps = 10
 
+// What a Heater heats to, and the least and the most it takes.
+const (
+	heatTarget = 20
+	heatLeast  = 1
+	heatMost   = 37
+)
+
 // Light puts an on/off light in home, off, named as its ID. Like Dimmer
 // and Plug, it panics on a device the home refuses, an empty ID: a test
 // that asks for one is wrong, and has no error to check.
@@ -80,6 +87,47 @@ func Fan(home *matter.Home, id matter.ID) *Fake {
 // Purifier is Fan as an air purifier.
 func Purifier(home *matter.Home, id matter.ID) *Fake {
 	return putFan(home, id, matter.AirPurifier)
+}
+
+// Heater is Purifier with everything an air purifier may have beside
+// its fan: it reads 21.5 degrees and a humidity of 40 percent, finds the
+// air good with 8 micrograms of fine and 12 of coarse particles, has a
+// HEPA filter with four fifths of its life left and a carbon filter that
+// does not say, and a heater, off, that heats to 20 degrees and takes 1
+// to 37. Set to heat, it heats; set to a target, it keeps heating or not
+// as it was.
+func Heater(home *matter.Home, named matter.ID) *Fake {
+	fake := &Fake{home: home, id: named}
+
+	var still, awake bool
+
+	celsius, damp, fine, coarse, left := 21.5, 40.0, 8.0, 12.0, 0.8
+
+	err := home.Put(matter.Device{
+		ID: named, Name: string(named), Kind: matter.AirPurifier,
+		FanControl: &matter.FanControl{
+			Mode: matter.FanOff, Speed: 1, Steps: fanSteps, Oscillating: &still, Sleep: &awake,
+			SetMode: fake.setFanMode, SetSpeed: fake.setFanSpeed,
+			SetOscillating: fake.setOscillating, SetSleep: fake.setSleep,
+		},
+		Temperature: &matter.Temperature{Celsius: &celsius},
+		Humidity:    &matter.Humidity{Percent: &damp},
+		AirQuality: &matter.AirQuality{
+			Quality: matter.QualityGood,
+			PM25:    &matter.Particulates{Micrograms: &fine},
+			PM10:    &matter.Particulates{Micrograms: &coarse},
+		},
+		Filters: []matter.Filter{{Kind: matter.HEPA, Left: &left}, {Kind: matter.Carbon}},
+		Heater: &matter.Heater{
+			Target: heatTarget, Least: heatLeast, Most: heatMost,
+			SetOn: fake.setHeat, SetTarget: fake.setHeatTarget,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	return fake
 }
 
 // putFan is put for a fan.
@@ -250,6 +298,33 @@ func (f *Fake) setSleep(_ context.Context, on bool) error {
 	return f.fanned(func(now *matter.FanChanged) { now.Sleep = on })
 }
 
+// setHeat sets the heater to heat, which it then does, or to heat no
+// more.
+func (f *Fake) setHeat(_ context.Context, on bool) error {
+	if err := f.take(SetHeat{On: on}); err != nil {
+		return err
+	}
+
+	held, _ := f.home.Device(f.id)
+
+	return f.home.Report(f.id, matter.HeaterChanged{On: on, Heating: on, Target: held.Heater.Target})
+}
+
+// setHeatTarget refuses a target outside what the heater takes.
+func (f *Fake) setHeatTarget(_ context.Context, celsius float64) error {
+	if err := f.take(SetHeatTarget{Celsius: celsius}); err != nil {
+		return err
+	}
+
+	if !(celsius >= heatLeast && celsius <= heatMost) {
+		return fmt.Errorf("%w: the target %v", matter.ErrInvalid, celsius)
+	}
+
+	held, _ := f.home.Device(f.id)
+
+	return f.home.Report(f.id, matter.HeaterChanged{On: held.Heater.On, Heating: held.Heater.Heating, Target: celsius})
+}
+
 // Ask is one command a Fake was sent: one of the types below.
 type Ask interface{ ask() }
 
@@ -273,6 +348,10 @@ type (
 	SetOscillating struct{ On bool }
 	// SetSleep is FanControl.SetSleep.
 	SetSleep struct{ On bool }
+	// SetHeat is a heater set to heat, or to heat no more.
+	SetHeat struct{ On bool }
+	// SetHeatTarget is a heater set to heat to a temperature.
+	SetHeatTarget struct{ Celsius float64 }
 )
 
 func (SetOn) ask()    {}
@@ -284,3 +363,5 @@ func (SetFanMode) ask()     {}
 func (SetFanSpeed) ask()    {}
 func (SetOscillating) ask() {}
 func (SetSleep) ask()       {}
+func (SetHeat) ask()        {}
+func (SetHeatTarget) ask()  {}

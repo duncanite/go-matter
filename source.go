@@ -49,6 +49,34 @@ type (
 		Oscillating bool
 		Sleep       bool
 	}
+	// TemperatureChanged is what the device reads of the temperature, as
+	// Temperature has it: nil when it reads nothing.
+	TemperatureChanged struct{ Celsius *float64 }
+	// HumidityChanged is what the device reads of the humidity, as
+	// Humidity has it: nil when it reads nothing.
+	HumidityChanged struct{ Percent *float64 }
+	// AirQualityChanged is what the device reads of the air, whole, as
+	// AirQuality has it. PM25 and PM10 are nil when it reads nothing,
+	// and for a device that counts none.
+	AirQualityChanged struct {
+		Quality Quality
+		PM25    *float64
+		PM10    *float64
+	}
+	// FilterChanged is how a filter stands, as Filter has it. Left is nil
+	// exactly for a filter that does not say how much of it is left.
+	FilterChanged struct {
+		Filter  int
+		Left    *float64
+		Replace bool
+	}
+	// HeaterChanged is how the device's heater stands, whole, as Heater
+	// has it.
+	HeaterChanged struct {
+		On      bool
+		Heating bool
+		Target  float64
+	}
 	// ReachabilityChanged is the source having lost the device, or
 	// found it again.
 	ReachabilityChanged struct{ Unreachable bool }
@@ -67,6 +95,11 @@ type (
 func (OnOffChanged) change()        {}
 func (LevelChanged) change()        {}
 func (FanChanged) change()          {}
+func (TemperatureChanged) change()  {}
+func (HumidityChanged) change()     {}
+func (AirQualityChanged) change()   {}
+func (FilterChanged) change()       {}
+func (HeaterChanged) change()       {}
 func (ReachabilityChanged) change() {}
 func (ButtonPressed) change()       {}
 func (ButtonReleased) change()      {}
