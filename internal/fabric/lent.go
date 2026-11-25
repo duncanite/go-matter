@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"sync"
 
-	fabricbridge "github.com/SukramJ/go-fabric/bridge"
-	"github.com/SukramJ/go-fabric/mdns"
+	fabricbridge "thingfabric.dev/go-fabric/bridge"
+	"thingfabric.dev/go-fabric/mdns"
 )
 
 // The services a node is found as: open to be commissioned, and as a

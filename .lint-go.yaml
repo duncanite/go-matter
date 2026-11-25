@@ -26,7 +26,7 @@ golangci:
             # in internal/fabric alone; and the two libraries the sibling
             # modules read and write files with.
             allow:
-              - github.com/SukramJ/go-fabric
+              - thingfabric.dev/go-fabric
               - github.com/forkcloser/xos
               - github.com/mycophonic/primordium
       varnamelen:
