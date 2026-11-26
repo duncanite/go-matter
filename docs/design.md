@@ -211,7 +211,7 @@ is the target moved by tenths of a degree.
 ## What the first implementation does not do
 
 The bridge and the controller are built on
-[go-fabric](https://github.com/SukramJ/go-fabric), behind
+[go-fabric](https://github.com/thingfabric/go-fabric), behind
 [`internal/fabric`](../internal/fabric/serve.go), the one package that names it. Where it
 falls short of the API, the API stays as it is and the shortfall is here:
 

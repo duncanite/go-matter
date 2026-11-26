@@ -1,5 +1,5 @@
 // Package fabric is this module's one way into the Matter implementation
-// underneath, github.com/SukramJ/go-fabric: what package bridge and
+// underneath, thingfabric.dev/go-fabric: what package bridge and
 // package controller are made of, and what package mattertest runs on a
 // network of its own. Nothing of that library is named outside this
 // package.
@@ -15,14 +15,14 @@ import (
 	"time"
 	"unicode/utf8"
 
-	fancontroldef "github.com/SukramJ/go-fabric/cluster/spec/fancontrol"
-	fixedlabeldef "github.com/SukramJ/go-fabric/cluster/spec/fixedlabel"
-	levelcontroldef "github.com/SukramJ/go-fabric/cluster/spec/levelcontrol"
-	onoffdef "github.com/SukramJ/go-fabric/cluster/spec/onoff"
-	switchdef "github.com/SukramJ/go-fabric/cluster/spec/switchcluster"
-	"github.com/SukramJ/go-fabric/contract"
-	"github.com/SukramJ/go-fabric/device"
-	"github.com/SukramJ/go-fabric/node"
+	fancontroldef "thingfabric.dev/go-fabric/cluster/spec/fancontrol"
+	fixedlabeldef "thingfabric.dev/go-fabric/cluster/spec/fixedlabel"
+	levelcontroldef "thingfabric.dev/go-fabric/cluster/spec/levelcontrol"
+	onoffdef "thingfabric.dev/go-fabric/cluster/spec/onoff"
+	switchdef "thingfabric.dev/go-fabric/cluster/spec/switchcluster"
+	"thingfabric.dev/go-fabric/contract"
+	"thingfabric.dev/go-fabric/device"
+	"thingfabric.dev/go-fabric/node"
 
 	"github.com/duncanite/go-matter"
 )

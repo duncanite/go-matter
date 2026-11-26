@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	fancontroldef "github.com/SukramJ/go-fabric/cluster/spec/fancontrol"
-	"github.com/SukramJ/go-fabric/fabrictest"
+	fancontroldef "thingfabric.dev/go-fabric/cluster/spec/fancontrol"
+	"thingfabric.dev/go-fabric/fabrictest"
 
 	"github.com/duncanite/go-matter"
 	"github.com/duncanite/go-matter/mattertest"

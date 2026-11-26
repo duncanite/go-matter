@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/SukramJ/go-fabric/node"
-	"github.com/SukramJ/go-fabric/store"
 	"github.com/forkcloser/xos"
 	"github.com/mycophonic/primordium/filesystem"
+	"thingfabric.dev/go-fabric/node"
+	"thingfabric.dev/go-fabric/store"
 
 	"github.com/duncanite/go-matter"
 )

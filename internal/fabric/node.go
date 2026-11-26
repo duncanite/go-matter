@@ -1,7 +1,7 @@
 package fabric
 
 import (
-	"github.com/SukramJ/go-fabric/node"
+	"thingfabric.dev/go-fabric/node"
 )
 
 // Matter's identity for development: the vendor its test attestation is
