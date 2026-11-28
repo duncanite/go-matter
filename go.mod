@@ -5,7 +5,7 @@ go 1.27.4
 require (
 	github.com/forkcloser/xos v0.1.2
 	github.com/mycophonic/primordium v0.15.1
-	thingfabric.dev/go-fabric v0.25.0
+	thingfabric.dev/go-fabric v0.26.0
 )
 
 require (
